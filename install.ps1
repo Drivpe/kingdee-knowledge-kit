@@ -51,7 +51,7 @@ if (-not $NoPath) {
 # 4. 技能(~\.agents\skills 是 ZCode/Claude Code/Codex/Cursor 通用标准目录)
 if (-not $NoSkills) {
     $skillDst = Join-Path $env:USERPROFILE ".agents\skills\kingdee-knowledge"
-    $skillSrc = Join-Path $Repo "plugins\kingdee-knowledge\skills\kingdee-knowledge"
+    $skillSrc = Join-Path $Repo "skills\kingdee-knowledge\skills\kingdee-knowledge"
     Step "技能 → $skillDst"
     if (-not $DryRun) {
         New-Item -ItemType Directory -Force -Path $skillDst | Out-Null
@@ -76,7 +76,7 @@ if (-not $NoStart) {
 
 # 6. 回归验证
 if (-not $NoStart -and -not $DryRun) {
-    Step "回归验证(19 项内含 CLI)"
+    Step "回归验证(22 项内含 CLI 与 kd ai 降级)"
     $env:KD_PY = Join-Path $Bin "kd.py"
     $env:KSEARCH_URL = "http://127.0.0.1:$Port"
     & $pyCmd (Join-Path $Repo "tests\verify_ksearch.py")
@@ -86,5 +86,11 @@ if (-not $NoStart -and -not $DryRun) {
 Write-Host ""
 Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd search ""信用额度控制"" --product 93"
+Write-Host "  kd read <id> --kind answer               # 读全文,kind 照抄 search 结果的 type"
 Write-Host "  kd ask ""信用额度怎么控制"" --topk 4      # 资料包,交给你的 AI 合成"
+Write-Host "  kd ai ""信用额度怎么控制""                # 一步合成带引用回答(需模型通道,自动降级)"
 Write-Host "  kd manifest                              # 全部能力清单"
+Write-Host ""
+Write-Host "kd ai 模型通道(可选,任意 OpenAI 兼容端点):"
+Write-Host '  $env:KAI_BASE  = "http://127.0.0.1:4090"   # 默认值,勿带 /v1'
+Write-Host '  $env:KAI_MODEL = "glm-5.3-flash"            # 默认值'

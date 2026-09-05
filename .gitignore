@@ -30,3 +30,6 @@ __pycache__/
 tmp_*
 kd_*.json
 *.bak
+
+# ===== 工作管理工件(会话级,不入库) =====
+.scratch/

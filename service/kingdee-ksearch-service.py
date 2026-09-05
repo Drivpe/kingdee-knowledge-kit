@@ -331,8 +331,9 @@ def _manifest():
         "cli": {"path": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin",
                                      "kd.cmd" if os.name == "nt" else "kd"),
                 "commands": ["kd search \"<关键词>\" [--product 93] [--type knowledge|answer|article] [--size 10]",
-                             "kd question <questionId>", "kd answer <answerId>",
-                             "kd article <id> [--kind article]", "kd ask \"<问题>\" [--topk 4]",
+                             "kd read <id> [--kind knowledge|answer|article]  # kind 照抄 search 结果的 type",
+                             "kd ask \"<问题>\" [--topk 4] / --kw \"词1\" --kw \"词2\"",
+                             "kd ai \"<问题>\" [--topk 4]  # 需模型通道 KAI_BASE/KAI_MODEL,不可用自动降级资料包",
                              "kd share <分享短链|chatId>", "kd manifest", "kd health"]},
         "endpoints": {
             "GET|POST /search": {"params": {"text": "string,必填,关键词", "productId": "int,93=星空旗舰版/87=苍穹/1=企业版标准版/0=不过滤",

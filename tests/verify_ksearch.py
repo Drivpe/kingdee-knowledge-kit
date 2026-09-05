@@ -3,10 +3,11 @@
 路径全部参数化,双环境自适应:
   KSEARCH_URL  服务基址(默认 http://127.0.0.1:4097)
   KD_PY        kd.py 路径(默认依次找 %USERPROFILE%/.kingdee-kit/bin → %USERPROFILE%/.lingeebuild/bin)
-用法: python verify_ksearch.py            # 全量(约 1 分钟)
+用法: python verify_ksearch.py            # 全量(约 1 分钟;kd ai 检查用本地假 OpenAI 兼容端点,不需要真实模型通道)
 退出码: 0=全部通过 1=有失败
 """
-import json, os, subprocess, sys, time, urllib.request, urllib.error
+import json, os, subprocess, sys, threading, time, urllib.request, urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 B = os.environ.get("KSEARCH_URL", "http://127.0.0.1:4097")
 HOME = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
@@ -47,8 +48,14 @@ def expect(cond, msg=""):
 
 # ---- 服务端点 ----
 check("health", lambda: expect(call_http("/health").get("anonymous") is True, call_http("/health").get("service")))
-check("manifest", lambda: expect(len(call_http("/manifest")["endpoints"]) >= 9
-                                 and call_http("/manifest")["cli"]["commands"], "%d endpoints" % len(call_http("/manifest")["endpoints"])))
+def t_manifest():
+    m = call_http("/manifest")
+    cmds = " | ".join(m["cli"]["commands"])
+    expect(len(m["endpoints"]) >= 9, "endpoints=%d" % len(m["endpoints"]))
+    expect("kd read" in cmds and "kd ai" in cmds, "v2 命令面在清单中")
+    expect("kd question" not in cmds and "kd article" not in cmds, "旧命令已退役")
+    return "%d endpoints" % len(m["endpoints"])
+check("manifest", t_manifest)
 
 def t_search():
     d = call_http("/search?text=%s&productId=0&pageSize=10" % urllib.parse.quote("信用额度控制"))
@@ -96,9 +103,57 @@ def kd(args, timeout=120):
 
 if KD_PY:
     check("kd health", lambda: expect(kd(["health"])["anonymous"] is True, "via kd.py"))
-    check("kd manifest", lambda: expect(len(kd(["manifest"])["endpoints"]) >= 9, "endpoints"))
+    def t_kd_manifest():
+        cmds = " | ".join(kd(["manifest"])["cli"]["commands"])
+        expect("kd read" in cmds and "kd ai" in cmds, "v2 命令面")
+        return "endpoints"
+    check("kd manifest", t_kd_manifest)
     check("kd search 中文参数", lambda: expect(len(kd(["search", "信用额度控制", "--product", "0", "--size", "3"])["results"]) >= 1, "results≥1"))
-    check("kd question", lambda: expect(len(kd(["question", Q_ID])["answers"]) >= 1, "answers≥1"))
+    check("kd read knowledge", lambda: expect(len(kd(["read", KN_ID])["contentText"]) > 50, "官方文档全文"))
+    check("kd read answer", lambda: expect(len(kd(["read", Q_ID, "--kind", "answer"])["answers"]) >= 1, "问答帖全文"))
+    check("kd read article", lambda: expect(len(kd(["read", AR_ID, "--kind", "article"])["contentText"]) > 50, "社区文章全文"))
+
+# ---- kd ai:假 OpenAI 兼容端点(第 1 次请求回关键词 JSON,第 2 次回 Markdown 回答) ----
+def start_fake_kai():
+    state = {"n": 0}
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            state["n"] += 1
+            content = ("[\"信用额度\", \"应收单 信用\"]" if state["n"] == 1 else
+                       "## 解决方案\n\n1. 检查信用额度控制设置 [1]。\n\n## 参考来源\n\n[1] 测试标题 —— 官方文档")
+            b = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+if KD_PY:
+    def kd_env(args, env, timeout=240):
+        r = subprocess.run([PYTHON, KD_PY] + args, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, env=env)
+        expect(r.returncode == 0, "exit=%s stderr=%s" % (r.returncode, r.stderr[:160]))
+        return json.loads(r.stdout)
+
+    _FAKE_SRV = start_fake_kai()
+    _FAKE = "http://127.0.0.1:%d" % _FAKE_SRV.server_address[1]
+    def t_ai_ok():
+        d = kd_env(["ai", "信用额度怎么控制", "--topk", "2"], dict(os.environ, KAI_BASE=_FAKE, KSEARCH_URL=B))
+        expect(d.get("ok") is True and d.get("fallback") is False, "fallback=%s" % d.get("fallback"))
+        expect(len(d.get("answer") or "") > 10 and d.get("keywords"), "answer=%d 字 kw=%s" % (len(d.get("answer") or ""), d.get("keywords")))
+    check("kd ai 正常(假通道)", t_ai_ok)
+    def t_ai_fallback():
+        d = kd_env(["ai", "信用额度怎么控制", "--topk", "2"], dict(os.environ, KAI_BASE="http://127.0.0.1:9", KSEARCH_URL=B))
+        expect(d.get("fallback") is True and d.get("sources"), "fallback=true sources=%d" % len(d.get("sources") or []))
+    check("kd ai 降级(死通道)", t_ai_fallback)
+
     if KD_CMD:
         check("kd.cmd 包装", lambda: expect(subprocess.run(["cmd", "/c", KD_CMD, "health"], capture_output=True,
               text=True, encoding="utf-8", errors="replace", timeout=60).returncode == 0, "exit=0"))

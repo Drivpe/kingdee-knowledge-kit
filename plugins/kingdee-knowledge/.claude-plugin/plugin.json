@@ -1,9 +1,0 @@
-{
-  "name": "kingdee-knowledge",
-  "version": "1.0.0",
-  "description": "金蝶官方知识检索技能:kd CLI 匿名检索金蝶云社区官方知识库(含社区问答帖),读取全文后由当前 AI 合成带引用回答。零账号、零点数、零 LLM 依赖。",
-  "author": { "name": "kingdee-knowledge-kit" },
-  "license": "MIT",
-  "keywords": ["kingdee", "k3cloud", "knowledge", "search", "cli"],
-  "skills": "skills"
-}

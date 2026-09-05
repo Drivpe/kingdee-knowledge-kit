@@ -47,7 +47,7 @@ if [ "$NO_SKILLS" -eq 0 ]; then
   echo "[install] 技能 → $DEST"
   mkdir -p "$DEST"
   [ -f "$DEST/SKILL.md" ] && cp "$DEST/SKILL.md" "$DEST/SKILL.md.bak"
-  cp "$REPO/plugins/kingdee-knowledge/skills/kingdee-knowledge/SKILL.md" "$DEST/"
+  cp "$REPO/skills/kingdee-knowledge/skills/kingdee-knowledge/SKILL.md" "$DEST/"
 fi
 
 if [ "$NO_START" -eq 0 ]; then
@@ -60,5 +60,11 @@ fi
 echo ""
 echo "完成!试一试:"
 echo "  kd search \"信用额度控制\" --product 93"
+echo "  kd read <id> --kind answer               # 读全文,kind 照抄 search 结果的 type"
 echo "  kd ask \"信用额度怎么控制\" --topk 4      # 资料包,交给你的 AI 合成"
+echo "  kd ai \"信用额度怎么控制\"                # 一步合成带引用回答(需模型通道,自动降级)"
 echo "  kd manifest                              # 全部能力清单"
+echo ""
+echo "kd ai 模型通道(可选,任意 OpenAI 兼容端点):"
+echo "  export KAI_BASE=http://127.0.0.1:4090    # 默认值,勿带 /v1"
+echo "  export KAI_MODEL=glm-5.3-flash           # 默认值"

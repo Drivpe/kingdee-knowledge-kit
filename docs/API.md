@@ -1,12 +1,18 @@
-# 金蝶知识检索服务 API(v3.2)
+# 金蝶知识检索服务 API(v3.2 / 套件 v2.0)
 
-逆向金蝶云社区官方后端,本地封装。**零账号、零点数、零凭据、零浏览器依赖、零 LLM**——检索/全文/问答包/分享对话全匿名;
-合成回答由调用方 AI 完成。统一入口是 kd CLI(见仓库根 README);本文是 HTTP 层参考。
+逆向金蝶云社区官方后端,本地封装。**零账号、零点数、零凭据、零浏览器依赖**——检索/全文/问答包/分享对话全匿名;
+合成回答两条路:`kd ai` 走你的模型通道,或调用方 AI 拿资料包自己写。
 
 - 基址:`http://127.0.0.1:4097`(可用环境变量 `KSEARCH_URL` 指向其他实例)
 - 启动:`scripts/start-service.ps1`(Windows)/ `scripts/start-service.sh`(*nix)
 - 代码:`service/kingdee-ksearch-service.py`(纯标准库,无 pip 依赖)
 - 自发现:`GET /manifest` 返回机器可读能力清单(端点/参数/实体/CLI 路径),agent 一次 GET 即会用
+
+## kd CLI(v2.0,7 命令)
+
+`search / read / ask / ai / share / manifest / health`。`read` 的 `--kind` 照抄 search 结果的 `type`
+(`knowledge→/karticle`、`answer→/question`、`article→/article`;单条回答端点 `/answer` 仍可用但 CLI 不再单独暴露,
+问答帖全文已覆盖)。AI-first 契约与 `kd ai` 的模型通道(`KAI_BASE` 勿带 `/v1`、`KAI_MODEL`)见根 README「进阶」。
 
 ## GET / 或 /manifest — 机器可读能力清单
 
