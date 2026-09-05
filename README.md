@@ -22,16 +22,16 @@ vip.kingdee.com 官方社区
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/<你>/<仓库>/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.ps1 | iex
 ```
 
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<你>/<仓库>/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.sh | bash
 ```
 
-或先 clone 再跑:`git clone <仓库> && powershell -File install.ps1`(Windows)/ `bash install.sh`(*nix)。
+或先 clone 再跑:`git clone https://github.com/Drivpe/kingdee-knowledge-kit.git && powershell -File install.ps1`(Windows)/ `bash install.sh`(*nix)。
 装什么:①服务(~/.kingdee-kit/service,自动拉起) ②kd CLI(~/.kingdee-kit/bin,加入 PATH)
 ③技能(~/.agents/skills) ④自动跑回归验证。开关:`-NoPath -NoSkills -NoStart -InstallRoot -Port`。
 
@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/<你>/<仓库>/main/install.sh | ba
 
 - ZCode:设置 → 插件 → Discover → "+" 添加本仓库 GitHub 地址 → Get(本仓库是标准 marketplace/插件格式)
 - 或任意 agent(Claude Code/Codex/Cursor/ZCode 通用):把 `plugins/kingdee-knowledge/skills/kingdee-knowledge/`
-  复制到 `~/.agents/skills/`;或 `npx skills add <你>/<仓库>`
+  复制到 `~/.agents/skills/`;或 `npx skills add Drivpe/kingdee-knowledge-kit`
 
 **③ 开发者**
 
