@@ -1,3 +1,14 @@
 #!/usr/bin/env bash
-# kd — 金蝶官方知识 CLI 包装(*nix)。用法: kd search "关键词" ...
-cd "$(dirname "$0")" && exec python3 kd.py "$@"
+# kd — 金蝶官方知识 CLI 包装(*nix / Git Bash;Windows cmd/PowerShell 走 kd.cmd)。
+# 存在意义:MSYS2 bash 不会把裸名解析到 .cmd,没有本文件则 Git Bash 里 `kd` 找不到。
+# 注意:Windows 商店别名桩(python3.exe/python.exe)会被 command -v 命中却不可执行,
+# 因此每个候选先真跑一次 -c "import sys" 探测,再 exec。
+# 用法: kd search "关键词" ...
+cd "$(dirname "$0")" || exit 1
+for cand in python3 python "$LOCALAPPDATA/Programs/Python/Python312/python.exe"; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys" >/dev/null 2>&1; then
+        exec "$cand" kd.py "$@"
+    fi
+done
+echo "kd: 未找到可用的 Python(需要 3.8+);请安装 Python 或重跑安装器" >&2
+exit 1

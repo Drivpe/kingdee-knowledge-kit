@@ -6,7 +6,7 @@
 用法: python verify_ksearch.py            # 全量(约 1 分钟;kd ai 检查用本地假 OpenAI 兼容端点,不需要真实模型通道)
 退出码: 0=全部通过 1=有失败
 """
-import json, os, subprocess, sys, threading, time, urllib.request, urllib.error
+import json, os, shutil, subprocess, sys, threading, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 B = os.environ.get("KSEARCH_URL", "http://127.0.0.1:4097")
@@ -112,6 +112,23 @@ if KD_PY:
     check("kd read knowledge", lambda: expect(len(kd(["read", KN_ID])["contentText"]) > 50, "官方文档全文"))
     check("kd read answer", lambda: expect(len(kd(["read", Q_ID, "--kind", "answer"])["answers"]) >= 1, "问答帖全文"))
     check("kd read article", lambda: expect(len(kd(["read", AR_ID, "--kind", "article"])["contentText"]) > 50, "社区文章全文"))
+
+    def t_kd_bare_name():
+        # 回归:agent 在 Git Bash 里敲裸名 `kd` 必须可解析。两个已知坑:
+        # ① MSYS2 bash 不把裸名解析到 .cmd → 需要 cli/kd shim;
+        # ② Windows 商店 python3.exe/python.exe 别名桩会被 command -v 命中却不可执行 → shim 内逐候选探测。
+        bash = shutil.which("bash")
+        expect(bash, "未找到 bash,跳过依据缺失")
+        un = subprocess.run([bash, "-c", "uname -s"], capture_output=True, text=True, timeout=15).stdout.strip()
+        if sys.platform == "win32" and un == "Linux":
+            return "WSL bash,环境不同,跳过"
+        kd_dir = os.path.dirname(os.path.abspath(KD_PY))
+        r = subprocess.run([bash, "-c", "command -v kd >/dev/null && kd health >/dev/null && echo OK"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                           env=dict(os.environ, PATH=kd_dir + os.pathsep + os.environ.get("PATH", "")))
+        expect("OK" in r.stdout, (r.stdout[:80] or r.stderr[:80]) or "exit=%s" % r.returncode)
+        return "via %s" % bash
+    check("kd 裸名解析(bash shim)", t_kd_bare_name)
 
 # ---- kd ai:假 OpenAI 兼容端点(第 1 次请求回关键词 JSON,第 2 次回 Markdown 回答) ----
 def start_fake_kai():

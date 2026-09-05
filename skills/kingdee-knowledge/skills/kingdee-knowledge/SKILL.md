@@ -14,11 +14,15 @@ description: >-
 
 ## kd 的定位(三级回退)
 
-1. PATH 里的 `kd`
-2. Windows: `%USERPROFILE%\.kingdee-kit\bin\kd.cmd`；Linux/macOS: `~/.kingdee-kit/bin/kd`
+1. PATH 里的 `kd`(Git Bash 下裸名走无扩展名 shim;cmd/PowerShell 走 kd.cmd)
+2. Windows: `%USERPROFILE%\.kingdee-kit\bin\kd.cmd` 或 `%USERPROFILE%\.lingeebuild\bin\kd.cmd`;
+   Linux/macOS: `~/.kingdee-kit/bin/kd`
 3. 都没有 → 告知用户运行本仓库安装器(install.ps1 / install.sh);**在此之前不要编造任何金蝶知识内容**
 
 能力清单:`kd manifest`(命令/端点/参数的机器可读文档,拿不准就先看它)
+
+⚠️ **永远不要把 stderr 丢弃(禁 `2>/dev/null`)**:stdout=数据,stderr=进度与诊断;命令失败时先看
+stderr/错误 JSON(带 hint),据此换调用方式,而不是静默改道 websearch。
 
 ## ⭐ 标准流程:检索 → 照抄 type 读全文 → 按 ANSWER-SPEC 回答
 
