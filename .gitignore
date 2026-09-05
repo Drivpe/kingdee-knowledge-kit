@@ -1,0 +1,32 @@
+# ===== 凭据/会话(绝不入库,双保险:即使误放进目录也会被拦) =====
+*cookie*
+*Cookie*
+*credentials*
+*credential*
+*bridge-auth*
+*webview*
+*passenger*
+model-map.json
+vip-*.json
+vip-*.txt
+lingee-bridge-auth.json
+*.session
+
+# ===== 日志/运行时 =====
+*.log
+logs/
+
+# ===== 本地交接文档与环境资料(含本机路径/账号痕迹,不发布) =====
+交接文档*
+raw_*
+*_sse_*.txt
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== 临时文件 =====
+tmp_*
+kd_*.json
+*.bak
