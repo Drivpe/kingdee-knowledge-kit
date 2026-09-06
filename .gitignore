@@ -33,3 +33,11 @@ kd_*.json
 
 # ===== 工作管理工件(会话级,不入库) =====
 .scratch/
+
+# ===== 语料采集/服务运行时状态(可再生,不入库;金标评测集 data/eval/ 除外) =====
+__p.json
+__t.json
+data/fullscan-progress.json
+data/fullscan-terms.json
+data/discovery-terms.json
+data/ksearch.db

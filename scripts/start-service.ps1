@@ -1,4 +1,4 @@
-﻿# start-service.ps1 — 参数化启动金蝶知识检索服务(匿名)
+﻿# start-service.ps1 — 参数化启动金蝶知识检索服务(匿名,v4 检索管线)
 # 用法: powershell -ExecutionPolicy Bypass -File start-service.ps1 [-Port 4097] [-InstallRoot <dir>] [-Restart]
 param(
     [int]$Port = 4097,

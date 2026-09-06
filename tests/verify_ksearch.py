@@ -80,6 +80,130 @@ check("ask(text)", lambda: expect(len(call_http("/ask", {"text": "信用额度�
 check("ask(keywords)", lambda: expect(len(call_http("/ask", {"keywords": ["信用额度", "应收单 信用"], "topK": 2})["sources"]) >= 1, "sources≥1"))
 check("share", lambda: expect(call_http("/share", {"link": "https://vip.kingdee.com/link/s/clzcE"})["count"] >= 1, "chats≥1"))
 
+# ---- v4 检索管线(信号重排/同义词RRF/缓存语料库/chunk) ----
+def t_v4_search():
+    d = call_http("/search", {"text": "MRP运算 需求", "productId": 93, "pageSize": 5,
+                              "pipeline": {"rerank": True}})
+    expect(d.get("results"), "results空")
+    st = d.get("stats") or {}
+    expect(st.get("pipeline"), "缺 stats.pipeline")
+    expect(len(d.get("queries") or []) >= 1, "缺 queries")
+    return "queries=%d upstream=%s" % (len(d["queries"]), st.get("upstreamCalls"))
+check("v4 search 管线(重排opt-in)", t_v4_search)
+
+check("v4 search 兼容模式 rerank=0", lambda: expect(
+    len(call_http("/search", {"text": "信用额度控制", "productId": 0, "pageSize": 5,
+                              "pipeline": {"rerank": False, "synonyms": False}})["results"]) >= 1, "v3.2路径可用"))
+
+def t_v4_ask_cache():
+    body = {"text": "BOM正查 需求用量 计算", "topK": 1, "cache": 1}
+    d1 = call_http("/ask", body)
+    chunks = [len((s.get("detail") or {}).get("chunks") or []) for s in d1.get("sources") or []]
+    d2 = call_http("/ask", body)
+    st2 = d2.get("stats") or {}
+    expect(st2.get("cacheHits", 0) >= 1, "二次未命中缓存 cacheHits=%s" % st2.get("cacheHits"))
+    expect(st2.get("upstreamCalls", 9) <= 1, "二次仍打上游 %s 次" % st2.get("upstreamCalls"))
+    expect(any(c > 0 for c in chunks), "无 chunk 切片")
+    return "chunks=%s 二次upstream=%s cacheHits=%s" % (chunks, st2.get("upstreamCalls"), st2.get("cacheHits"))
+check("v4 ask 缓存+chunk", t_v4_ask_cache)
+
+def t_v4_local():
+    d = call_http("/search", {"text": "需求用量 计算", "local": 1})
+    expect(d.get("local") is True and "results" in d, "local 路径异常")
+    h = call_http("/health")
+    expect("5.0" in (h.get("service") or ""), h.get("service"))
+    expect((h.get("db") or {}).get("chunks", 0) >= 1, "语料库未沉淀 chunk")
+    return "chunks=%s" % h["db"]["chunks"]
+check("v4 本地语料检索+健康", t_v4_local)
+
+# ---- v5 corpus 语料目录(写穿/stub/摄入/deprecate 标注) ----
+def t_v5_corpus_written():
+    h = call_http("/health")
+    c = h.get("corpus") or {}
+    expect(c.get("total", 0) >= 3, "corpus 未随前面的 read 沉淀 total=%s" % c.get("total"))
+    return "total=%s k/a/a=%s/%s/%s" % (c.get("total"), c.get("knowledge"), c.get("answer"), c.get("article"))
+check("v5 corpus 写穿(read 沉淀)", t_v5_corpus_written)
+
+def t_v5_corpus_file():
+    cpath = (call_http("/health").get("corpus") or {}).get("path")
+    expect(cpath and os.path.isdir(cpath), "corpus 目录不存在 %s" % cpath)
+    p = os.path.join(cpath, "knowledge", "%s.md" % KN_ID)
+    expect(os.path.exists(p), "knowledge 全文未落盘 %s" % p)
+    head = open(p, encoding="utf-8").read(600)
+    for field in ("id:", "type: knowledge", "url:", "title:", "discovered_by:"):
+        expect(field in head, "front-matter 缺 %s" % field)
+    return "front-matter 完整"
+check("v5 corpus 文件规范", t_v5_corpus_file)
+
+def t_v5_corpus_ingest():
+    r = call_http("/corpus", {"items": [{"type": "article", "id": "verify-ingest-1", "title": "verify stub",
+                                         "snippet": "s", "updatedAt": "2026-09-06"}],
+                               "discoveredBy": "timesweep"})
+    expect(r.get("ok") and r.get("written", 0) + r.get("unchanged", 0) >= 1, str(r)[:120])
+    r2 = call_http("/corpus", {"items": [{"type": "article", "id": "verify-ingest-1", "title": "verify stub",
+                                          "snippet": "s", "updatedAt": "2026-09-06"}],
+                               "discoveredBy": "timesweep"})
+    expect(r2.get("unchanged", 0) == 1, "重复摄入未判 unchanged: %s" % r2)
+    return "written=%d 复摄入=unchanged" % r.get("written", 0)
+check("v5 corpus 摄入+幂等", t_v5_corpus_ingest)
+
+check("v5 deprecate 标注", lambda: expect(
+    "deprecated" in str(call_http("/manifest")["pipeline"]["params"].get("local", "")), "local 未标 deprecated"))
+def t_v5_fullscan_idempotent():
+    """全量快照脚本幂等:假 /search 恒回同一页,/corpus 转发真服务。
+    第一轮写入 N 篇;第二轮(断点+去重)必须零新增、请求极少。"""
+    import subprocess
+    fwd = urllib.request.build_opener()
+    class H(BaseHTTPRequestHandler):
+        def _send(self, b):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+        def do_GET(self):
+            results = [{"type": "article", "id": "fs-%d" % n, "title": "fullscan sample %d" % n,
+                        "snippet": "s", "url": "https://vip.kingdee.com/article/fs-%d" % n} for n in range(3)]
+            self._send(json.dumps({"results": results, "totalElements": 6, "totalPages": 2}).encode())
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n)
+            req = urllib.request.Request(B + self.path, data=body, headers={"Content-Type": "application/json"})
+            self._send(fwd.open(req, timeout=30).read())
+        def log_message(self, *a):
+            pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    fake = "http://127.0.0.1:%d" % srv.server_address[1]
+    prog = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__fullscan_test_progress.json")
+    if os.path.exists(prog):
+        os.remove(prog)
+    terms_file = prog.replace("progress", "terms")
+    with open(terms_file, "w", encoding="utf-8") as f:
+        json.dump({"terms": ["测试词A", "测试词B"]}, f)
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "corpus_fullscan.py")
+    def run():
+        r = subprocess.run([PYTHON, script, "--terms", terms_file, "--progress", prog,
+                            "--max-requests", "10", "--pages", "2"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           env=dict(os.environ, KSEARCH_URL=fake), timeout=120)
+        expect(r.returncode == 0, "exit=%s %s" % (r.returncode, r.stderr[:160]))
+        return json.loads(r.stdout)
+    r1 = run()
+    expect(r1["stubsWritten"] >= 3, "首轮未写入 %s" % r1)
+    r2 = run()
+    expect(r2["stubsWritten"] == 0, "第二轮重复写入 %s" % r2)
+    os.remove(prog)
+    os.remove(terms_file)
+    cpath = (call_http("/health").get("corpus") or {}).get("path")
+    for n in range(3):
+        f = os.path.join(cpath, "article", "fs-%d.md" % n)
+        if os.path.exists(f):
+            os.remove(f)
+    return "首轮+%d 二轮0" % r1["stubsWritten"]
+check("v5 fullscan 幂等(假服务)", t_v5_fullscan_idempotent)
+
+
 def t_retired():
     try:
         call_http("/rag", {"question": "x"})

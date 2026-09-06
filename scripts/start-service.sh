@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start-service.sh — 参数化启动金蝶知识检索服务(匿名)
+# start-service.sh — 参数化启动金蝶知识检索服务(匿名,v4 检索管线)
 # 用法: ./start-service.sh [port] [install_root] [--restart]
 PORT="${1:-4097}"
 ROOT="${2:-$HOME/.kingdee-kit}"

@@ -129,14 +129,20 @@ def _ai_fallback(pack, reason):
 
 
 def _source_text(s):
-    """资料包单源的合成素材:knowledge/article 取 detail.contentText;
-    answer 取问题正文+前 3 条回答(采纳标 [采纳])。单源有界 6000 字。"""
+    """资料包单源的合成素材:knowledge/article 优先命中段落 chunks(标题感知切片,token 更省更准,
+    引用可到 [chunk#seq]);无 chunks 退化全文。answer 取问题正文+前 3 条回答(采纳标 [采纳])。
+    单源有界 6000 字。"""
     d = s.get("detail") or {}
     if s.get("type") == "answer":
         parts = [d.get("contentText") or ""]
         for ans in (d.get("answers") or [])[:3]:
             parts.append(("[采纳] " if ans.get("adopted") else "") + (ans.get("contentText") or ""))
         return "\n".join(p for p in parts if p)[:6000]
+    ch = d.get("chunks")
+    if ch:
+        joined = "\n".join("[chunk#%s%s] %s" % (c.get("seq"), (" " + c["heading"]) if c.get("heading") else "", c["text"])
+                           for c in ch)
+        return joined[:6000]
     return (d.get("contentText") or "")[:6000]
 
 
