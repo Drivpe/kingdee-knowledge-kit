@@ -1,0 +1,824 @@
+{
+ "version": "v3 (2026-09-06, 分层:usage=正式金标 / reference=官方对话参考;正式口径脱离官方AI对话)",
+ "description": "kd 检索评测集。gold=标准答案文档;official-share 案例的 gold 取官方 AI recallDocuments(官方 AI 认为相关的召回集);expert 案例的 gold 为人工读全文核实过的相关文档。queries 为专家固定关键词,各配置间不变以保证 A/B 公平。",
+ "metricNote": "命中判定:结果条目的 id 或 questionId(答兑换算后)出现在 gold.id 中即算命中。",
+ "cases": [
+  {
+   "id": "off-trace-batch",
+   "source": "official-share",
+   "chatId": "884224571283413248",
+   "conversational": false,
+   "question": "完工入库单的批号为260728；但在一键追溯查询中，查询的是0723批号的产品",
+   "product": 93,
+   "queries": [
+    "一键追溯 批号 完工入库单",
+    "追溯查询 批号 不一致"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "660787751146599680"
+    },
+    {
+     "type": "knowledge",
+     "id": "660428355514447104"
+    },
+    {
+     "type": "knowledge",
+     "id": "660873187827430656"
+    },
+    {
+     "type": "knowledge",
+     "id": "660566504646986240"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978992516364288"
+    },
+    {
+     "type": "knowledge",
+     "id": "847280305961635328"
+    },
+    {
+     "type": "knowledge",
+     "id": "873372941507717632"
+    },
+    {
+     "type": "knowledge",
+     "id": "872285225353928704"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977505753129216"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-asset-estimate",
+   "source": "official-share",
+   "chatId": "884224971202504704",
+   "conversational": false,
+   "question": "资产收料通知单审核时自动生成并审核了暂估应付单，我需要取消自动审核转为自动保存，该如何设置",
+   "product": 93,
+   "queries": [
+    "收料通知单 暂估应付单 自动审核",
+    "入库验收收料审核自动暂估 参数"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "863586686540830208"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-server-where",
+   "source": "official-share",
+   "chatId": "884224971202504704",
+   "conversational": true,
+   "question": "服务端服务在哪里",
+   "product": 93,
+   "queries": [
+    "开发平台 服务端 服务",
+    "开发服务云 服务"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "272106551916218368"
+    },
+    {
+     "type": "knowledge",
+     "id": "849341146814884864"
+    },
+    {
+     "type": "knowledge",
+     "id": "502549684187925248"
+    },
+    {
+     "type": "knowledge",
+     "id": "527209450982268160"
+    },
+    {
+     "type": "knowledge",
+     "id": "827278444202113792"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105484717508608"
+    },
+    {
+     "type": "knowledge",
+     "id": "272106554801899520"
+    },
+    {
+     "type": "knowledge",
+     "id": "505741686820097536"
+    },
+    {
+     "type": "knowledge",
+     "id": "847897156227468288"
+    },
+    {
+     "type": "knowledge",
+     "id": "238226778828122624"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-mc-exclusive",
+   "source": "official-share",
+   "chatId": "884225148570638592",
+   "conversational": false,
+   "question": "本地环境升级补丁,在升级校验时提示版本互斥错误,【MC-008-003】当前集群为星瀚,请确认版本是否正常;这个错误如何处理",
+   "product": 0,
+   "queries": [
+    "MC-008-003 版本互斥",
+    "版本互斥 星瀚 补丁 升级"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "842977696706943488"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977800858525696"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977926871478272"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978028755833856"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978138061602816"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-mc-exclusive-persist",
+   "source": "official-share",
+   "chatId": "884225148570638592",
+   "conversational": true,
+   "question": "数据库三项操作结束后,也重新对集群进行了发布,仍然跳出版本互斥",
+   "product": 0,
+   "queries": [
+    "版本互斥 缓存 清理 MC",
+    "MC 版本互斥 仍然 排查"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "842977696706943488"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977800858525696"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977926871478272"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978028755833856"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978138061602816"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-mc-version-view",
+   "source": "official-share",
+   "chatId": "884225148570638592",
+   "conversational": true,
+   "question": "如何查看MC版本",
+   "product": 0,
+   "queries": [
+    "查看 MC 版本 管理中心",
+    "管理中心 版本 查看"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "675628465596193024"
+    },
+    {
+     "type": "knowledge",
+     "id": "736320400086281984"
+    },
+    {
+     "type": "knowledge",
+     "id": "677458057407752448"
+    },
+    {
+     "type": "knowledge",
+     "id": "864809886583565056"
+    },
+    {
+     "type": "knowledge",
+     "id": "715996022857855744"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-mc-patch-missing",
+   "source": "official-share",
+   "chatId": "884225148570638592",
+   "conversational": true,
+   "question": "本地升级MC版本显示本地补丁文件不存在",
+   "product": 0,
+   "queries": [
+    "MC升级 补丁文件 不存在",
+    "MC 本地补丁 目录 升级"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "618509415934732800"
+    },
+    {
+     "type": "knowledge",
+     "id": "677468430089316608"
+    },
+    {
+     "type": "knowledge",
+     "id": "420952110000147712"
+    },
+    {
+     "type": "knowledge",
+     "id": "857993227855326208"
+    },
+    {
+     "type": "knowledge",
+     "id": "675628465596193024"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-mc-download",
+   "source": "official-share",
+   "chatId": "884225148570638592",
+   "conversational": true,
+   "question": "MC升级补丁包下载地址",
+   "product": 0,
+   "queries": [
+    "MC 升级补丁包 下载",
+    "MC补丁 下载地址 容器化"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "723559354636485632"
+    },
+    {
+     "type": "knowledge",
+     "id": "857993227855326208"
+    },
+    {
+     "type": "knowledge",
+     "id": "251398759400624384"
+    },
+    {
+     "type": "knowledge",
+     "id": "626102427867010304"
+    },
+    {
+     "type": "knowledge",
+     "id": "675628465596193024"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-field-types",
+   "source": "official-share",
+   "chatId": "884133729688212736",
+   "conversational": false,
+   "question": "开发平台里面的金额、单价字段和小数字段有什么区别，如何判断我使用的控件类型",
+   "product": 93,
+   "queries": [
+    "金额字段 单价字段 区别",
+    "小数字段 金额字段 控件类型"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "272105441482622976"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105442086602752"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105426819336192"
+    },
+    {
+     "type": "knowledge",
+     "id": "834063961329675776"
+    },
+    {
+     "type": "knowledge",
+     "id": "196313031025380608"
+    },
+    {
+     "type": "knowledge",
+     "id": "762728327688796672"
+    },
+    {
+     "type": "knowledge",
+     "id": "244408875750279168"
+    },
+    {
+     "type": "knowledge",
+     "id": "230334698088960768"
+    },
+    {
+     "type": "knowledge",
+     "id": "759046018754357760"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105413246568448"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105445878253568"
+    },
+    {
+     "type": "knowledge",
+     "id": "239045906702872064"
+    },
+    {
+     "type": "knowledge",
+     "id": "347080750569247744"
+    },
+    {
+     "type": "knowledge",
+     "id": "783687837769547776"
+    },
+    {
+     "type": "knowledge",
+     "id": "272105464064755712"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-currency-bind",
+   "source": "official-share",
+   "chatId": "884133729688212736",
+   "conversational": true,
+   "question": "必须绑定币别字段,这个在哪里绑定,我不同组织区分可以吗",
+   "product": 93,
+   "queries": [
+    "金额字段 币别 绑定",
+    "单价字段 币别 多组织"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "842977689584984064"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977795743322112"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977909537722368"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978017580023808"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978125513027584"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978237470183424"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978346972569600"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978457546145792"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-price-scene",
+   "source": "official-share",
+   "chatId": "884133729688212736",
+   "conversational": true,
+   "question": "单价和金额如何区分使用场景,标准采购单价与实际采购单价应建立什么字段类型",
+   "product": 93,
+   "queries": [
+    "采购单价 字段类型 选择",
+    "价目表 单价 金额 字段"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "842977689584984064"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977795743322112"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977909537722368"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978017580023808"
+    },
+    {
+     "type": "knowledge",
+     "id": "842978125513027584"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-bom-27000",
+   "source": "official-share",
+   "chatId": "884194634405046272",
+   "conversational": false,
+   "question": "OPENAPI传入的BOM,分母显示27000,MRP运算的结果却是27000的平方,系统界面显示的数字正常为27000,但BOM多级展开导出的数字是27000的平方,BOM正查导出的结果是正常的",
+   "product": 93,
+   "queries": [
+    "BOM 分母 MRP运算 数量",
+    "BOM 生产单位数量 分母 用量",
+    "BOM 多级展开 需求用量 错误"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "873372977646105600"
+    },
+    {
+     "type": "knowledge",
+     "id": "814301297020613888"
+    },
+    {
+     "type": "knowledge",
+     "id": "844594483362100736"
+    },
+    {
+     "type": "knowledge",
+     "id": "272106367568168960"
+    },
+    {
+     "type": "knowledge",
+     "id": "863586561198565888"
+    },
+    {
+     "type": "knowledge",
+     "id": "837131767617736192"
+    },
+    {
+     "type": "knowledge",
+     "id": "880619422191072256"
+    },
+    {
+     "type": "knowledge",
+     "id": "595622533794360064"
+    },
+    {
+     "type": "knowledge",
+     "id": "737282026301820416"
+    },
+    {
+     "type": "knowledge",
+     "id": "743913798649764352"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "exp-bom-molecule-limit",
+   "source": "expert",
+   "question": "BOM导入失败提示字段基本单位用量分子的值0超出限定范围",
+   "product": 0,
+   "queries": [
+    "BOM导入 分子 超出限定范围",
+    "基本单位用量 分子 0 保存失败"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "737282026301820416"
+    },
+    {
+     "type": "answer",
+     "id": "756249637219823360"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-plan-bom-ratio",
+   "source": "expert",
+   "question": "计划运算后计划订单的分子分母与BOM中设置的不一致",
+   "product": 0,
+   "queries": [
+    "计划订单 分子分母 BOM 不一致",
+    "计划BOM 分子分母 约分 跳层"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "828071402723646720"
+    },
+    {
+     "type": "knowledge",
+     "id": "375337462530600448"
+    },
+    {
+     "type": "answer",
+     "id": "626092735501275904"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-jump-layer-ratio",
+   "source": "expert",
+   "question": "生产订单的用料清单多次跳层后分子分母数据不对,如何排查",
+   "product": 0,
+   "queries": [
+    "生产订单 用料清单 跳层 分子分母",
+    "跳层 分子分母 数据不对 排查"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "784081182786381568"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-mrp-demand-error",
+   "source": "expert",
+   "question": "MRP运算需求错误的原因及解决方案",
+   "product": 93,
+   "queries": [
+    "MRP运算 需求 错误",
+    "生产日历 计划运算 需求"
+   ],
+   "gold": [
+    {
+     "type": "answer",
+     "id": "782292679064870912"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-min-package",
+   "source": "expert",
+   "question": "物料设置了最小包装500,需求数量273,mrp运算跑出2个500,多采购了",
+   "product": 93,
+   "queries": [
+    "物料 最小包装 需求数量 MRP",
+    "最小包装 采购数量 整批"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "878083148808860672"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-forward-query-usage",
+   "source": "expert",
+   "question": "BOM正查的需求用量和标准用量是怎么计算的",
+   "product": 93,
+   "queries": [
+    "BOM正查 需求用量 计算",
+    "BOM 标准用量 分子 分母"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "842977688205184256"
+    },
+    {
+     "type": "knowledge",
+     "id": "880619422191072256"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-production-unit-qty",
+   "source": "expert",
+   "question": "BOM中分子分母设置为1:1,但新增生产用料清单时,分母用量显示为4,导致实际用量被除以4",
+   "product": 0,
+   "queries": [
+    "BOM 生产单位数量 隐藏字段",
+    "生产用料清单 分母用量 异常"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "873372977646105600"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-skip-layer-mrp",
+   "source": "expert",
+   "question": "跳层件在MRP计划运算中是如何计算的,如何确保物料不跳层展开",
+   "product": 93,
+   "queries": [
+    "跳层件 MRP 计算",
+    "跳层 库存 计划订单 展开"
+   ],
+   "gold": [
+    {
+     "type": "article",
+     "id": "642448594288545024"
+    },
+    {
+     "type": "knowledge",
+     "id": "865761757535719680"
+    },
+    {
+     "type": "knowledge",
+     "id": "852354611196752384"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-multilevel-export",
+   "source": "expert",
+   "question": "BOM维护列表多级展开结果导出如何导出到多个页签",
+   "product": 93,
+   "queries": [
+    "BOM 多级展开 导出 页签",
+    "BOM列表 多级展开 导出"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "814301297020613888"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-virtual-part",
+   "source": "expert",
+   "question": "虚拟件如何使用,在业务流程中如何体现",
+   "product": 93,
+   "queries": [
+    "虚拟件 使用 业务流程",
+    "虚拟件 MRP 展开"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "848005499025953536"
+    },
+    {
+     "type": "article",
+     "id": "640915475479694336"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "exp-skip-layer-param",
+   "source": "expert",
+   "question": "跳层件不考虑供应与跳层件整批展开参数的区别是什么",
+   "product": 93,
+   "queries": [
+    "计划运算 不考虑跳层件 库存 预计入库",
+    "跳层件 整批展开 参数 区别"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "865761757535719680"
+    }
+   ],
+   "tier": "usage"
+  },
+  {
+   "id": "off-credit-lock",
+   "source": "official-share",
+   "chatId": "884237889473911040",
+   "conversational": false,
+   "question": "销售订单因客户信用额度不足被锁单,如何解锁并调整该客户的信用额度?",
+   "product": 93,
+   "queries": [
+    "信用额度 锁单 解锁",
+    "销售订单 信用额度 不足"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "817586017090570496"
+    },
+    {
+     "type": "knowledge",
+     "id": "697020204861404160"
+    },
+    {
+     "type": "knowledge",
+     "id": "745682008717978624"
+    },
+    {
+     "type": "knowledge",
+     "id": "801617923117526272"
+    },
+    {
+     "type": "knowledge",
+     "id": "843654286264983808"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "off-account-subject",
+   "source": "official-share",
+   "chatId": "884238065567340800",
+   "conversational": false,
+   "question": "星空旗舰版如何新增一个会计科目?需要设置哪些必填项?",
+   "product": 93,
+   "queries": [
+    "新增 会计科目 必填项",
+    "会计科目 增加 设置"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "755594714619095040"
+    }
+   ],
+   "tier": "reference"
+  },
+  {
+   "id": "use-bom-27000",
+   "source": "usage",
+   "tier": "usage",
+   "origin": "真实工作区提问(2026-09-05 会话);gold=解题过程读全文核实的文档",
+   "question": "OPENAPI传入的BOM,分母显示27000,MRP运算的结果却是27000的平方,系统界面显示的数字正常为27000,但BOM多级展开导出的数字是27000的平方,BOM正查导出的结果是正常的",
+   "product": 93,
+   "queries": [
+    "BOM 分母 MRP运算 数量",
+    "BOM 生产单位数量 分母 用量",
+    "BOM 多级展开 需求用量 错误"
+   ],
+   "gold": [
+    {
+     "type": "knowledge",
+     "id": "873372977646105600"
+    },
+    {
+     "type": "knowledge",
+     "id": "842977688205184256"
+    },
+    {
+     "type": "knowledge",
+     "id": "880619422191072256"
+    },
+    {
+     "type": "knowledge",
+     "id": "737282026301820416"
+    },
+    {
+     "type": "knowledge",
+     "id": "828071402723646720"
+    }
+   ]
+  }
+ ]
+}
