@@ -40,9 +40,13 @@ stderr/错误 JSON(带 hint),据此换调用方式,而不是静默改道 websear
 **第 0 步:`rg` 直接搜本地语料目录**(每次深读/发现层落盘的语料,一文档一 md,带原链接 front-matter):
 
 ```bash
-rg -il --no-messages "BOM 分母" ~/.lingeebuild/corpus        # 文件名列表
-rg -i --no-heading -m 3 "信用额度" ~/.lingeebuild/corpus      # 匹配行(带文件路径,可连续读多个)
+rg -il --no-messages -e "BOM" -e "分母" ~/.lingeebuild/corpus   # 文件名列表(多词必须 -e 重复,OR 语义)
+rg -i --no-heading -m 3 -e "信用额度" ~/.lingeebuild/corpus     # 匹配行(带文件路径,可连续读多个)
+rg -il -e "^title:.*追溯" ~/.lingeebuild/corpus                # 标题优先:锚定 front-matter,命中质量最高
 ```
+
+- ⚠️ **多词查询必须 `-e` 重复**(OR 语义);带空格的 `"BOM 分母"` 是**字面短语**,只会命中恰好连写的文本,大量假 0 命中;
+- **标题优先**:先 `^title:` 锚定 front-matter 搜标题,再退全文;`^stub: true` 可识别只有摘要的 stub(读正文需写穿);
 
 - corpus 路径以 `kd health` 的 `corpus.path` 为准(默认 `~/.lingeebuild/corpus`);无 rg 时退 ugrep/grep(-r,能力弱化可接受);
 - 命中即读文件正文(front-matter 有原链接,回答必须引用);`stub: true` 的文件只有摘要,
@@ -121,7 +125,7 @@ question: <用户问题原话>
 
 ## 快捷方式
 
-- `rg "关键词" ~/.lingeebuild/corpus` —— 本地语料直搜(零上游,首选)
+- `rg -e "词1" -e "词2" ~/.lingeebuild/corpus` —— 本地语料直搜(零上游,首选;多词必须 `-e` 重复,空格=字面短语)
 - `kd ask "问题" --topk 4` —— 一站式资料包:检索+深读 topK 全文一次带回(在线首选)
 - `kd ai "问题"` —— 一步合成带引用回答(KAI_BASE/KAI_MODEL 指向 OpenAI 兼容端点)
 - `kd share <官方分享短链|chatId>` —— 读官方 AI 分享对话全文(引用自动沉淀 corpus)
