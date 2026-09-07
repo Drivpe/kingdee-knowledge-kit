@@ -1,0 +1,97 @@
+{
+ "generatedAt": "2026-09-07 13:11:52",
+ "evalset": {
+  "file": "evalset-rerank-gate.json",
+  "version": "rerank-gate-minset(仅硬指标用例)",
+  "pool": 1,
+  "sampled": 1,
+  "seed": null
+ },
+ "args": {
+  "configs": "baseline",
+  "size": 10,
+  "sleep": 1.0,
+  "topk": 4,
+  "sample": 0,
+  "seed": 42,
+  "maxRequests": 38,
+  "hardMetrics": true
+ },
+ "upstreamCalls": {
+  "used": 6,
+  "cap": 38
+ },
+ "results": {
+  "baseline": {
+   "rows": [
+    {
+     "id": "seed-vocab-gap-bom-27000",
+     "source": "usage",
+     "gold": 3,
+     "returned": 20,
+     "r5": 0.3333333333333333,
+     "r10": 0.3333333333333333,
+     "mrr": 0.3333333333333333,
+     "lat": [
+      618.3815002441406,
+      814.8036003112793
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    }
+   ],
+   "agg": {
+    "r5": 0.3333333333333333,
+    "r10": 0.3333333333333333,
+    "mrr": 0.3333333333333333,
+    "p50": 814.8,
+    "p95": 814.8,
+    "cached": 0
+   },
+   "byTier": {
+    "usage": {
+     "agg": {
+      "r5": 0.3333333333333333,
+      "r10": 0.3333333333333333,
+      "mrr": 0.3333333333333333,
+      "p50": 814.8,
+      "p95": 814.8,
+      "cached": 0
+     },
+     "n": 1
+    }
+   }
+  }
+ },
+ "hard": {
+  "vocabGapSurvival": 0.0,
+  "vocabGapN": 1,
+  "vocabGapAlive": 0,
+  "rootCauseExplain": 0.0,
+  "rootCauseN": 1,
+  "rootCauseExplained": 0,
+  "upstream": 4
+ },
+ "hardRows": [
+  {
+   "id": "seed-vocab-gap-bom-27000",
+   "tier": "usage",
+   "tags": [
+    "vocab-gap",
+    "root-cause"
+   ],
+   "survived": false,
+   "explained": false,
+   "goldHit": [],
+   "rcGoldHit": [],
+   "kwHits": [],
+   "sources": 4,
+   "upstream": 4,
+   "lat": [
+    4051.140546798706
+   ]
+  }
+ ]
+}

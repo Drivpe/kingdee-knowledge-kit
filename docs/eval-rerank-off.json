@@ -1,0 +1,115 @@
+{
+ "generatedAt": "2026-09-07 13:11:31",
+ "evalset": {
+  "file": "evalset-rerank-gate.json",
+  "version": "rerank-gate-minset(仅硬指标用例)",
+  "pool": 1,
+  "sampled": 1,
+  "seed": null
+ },
+ "args": {
+  "configs": "baseline",
+  "size": 10,
+  "sleep": 1.0,
+  "topk": 4,
+  "sample": 0,
+  "seed": 42,
+  "maxRequests": 38,
+  "hardMetrics": true
+ },
+ "upstreamCalls": {
+  "used": 16,
+  "cap": 38
+ },
+ "results": {
+  "baseline": {
+   "rows": [
+    {
+     "id": "seed-vocab-gap-bom-27000",
+     "source": "usage",
+     "gold": 3,
+     "returned": 20,
+     "r5": 0.3333333333333333,
+     "r10": 0.3333333333333333,
+     "mrr": 0.3333333333333333,
+     "lat": [
+      2223.9270210266113,
+      898.9758491516113
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    }
+   ],
+   "agg": {
+    "r5": 0.3333333333333333,
+    "r10": 0.3333333333333333,
+    "mrr": 0.3333333333333333,
+    "p50": 2223.9,
+    "p95": 2223.9,
+    "cached": 0
+   },
+   "byTier": {
+    "usage": {
+     "agg": {
+      "r5": 0.3333333333333333,
+      "r10": 0.3333333333333333,
+      "mrr": 0.3333333333333333,
+      "p50": 2223.9,
+      "p95": 2223.9,
+      "cached": 0
+     },
+     "n": 1
+    }
+   }
+  }
+ },
+ "hard": {
+  "vocabGapSurvival": 1.0,
+  "vocabGapN": 1,
+  "vocabGapAlive": 1,
+  "rootCauseExplain": 1.0,
+  "rootCauseN": 1,
+  "rootCauseExplained": 1,
+  "upstream": 14
+ },
+ "hardRows": [
+  {
+   "id": "seed-vocab-gap-bom-27000",
+   "tier": "usage",
+   "tags": [
+    "vocab-gap",
+    "root-cause"
+   ],
+   "survived": true,
+   "explained": true,
+   "goldHit": [
+    "873372977646105600"
+   ],
+   "rcGoldHit": [
+    "873372977646105600"
+   ],
+   "kwHits": [
+    {
+     "gold": "873372977646105600",
+     "source": "873372977646105600",
+     "rank": 2,
+     "chunks": [
+      1
+     ],
+     "keywords": [
+      "生产单位数量",
+      "隐藏字段",
+      "自动除以"
+     ]
+    }
+   ],
+   "sources": 4,
+   "upstream": 14,
+   "lat": [
+    6841.763019561768
+   ]
+  }
+ ]
+}

@@ -1,0 +1,72 @@
+{
+ "generatedAt": "2026-09-06 18:17:20",
+ "evalset": {
+  "file": "evalset.json",
+  "version": "v6-seed1 (2026-09-06, v6 评测重建起步:新增首条 usage 金标种子 seed-vocab-gap-bom-27000[ADR-0005「评测」节],v3 的 26 例原样保留作过渡对照;分层:usage=正式金标 / reference=官方对话参考)",
+  "pool": 27,
+  "sampled": 27,
+  "seed": null
+ },
+ "args": {
+  "configs": "rg",
+  "size": 10,
+  "sleep": 0.4,
+  "topk": 4,
+  "sample": 0,
+  "seed": 42,
+  "maxRequests": 0,
+  "hardMetrics": true
+ },
+ "upstreamCalls": {
+  "used": 7,
+  "cap": null
+ },
+ "results": {},
+ "hard": {
+  "vocabGapSurvival": 1.0,
+  "vocabGapN": 1,
+  "vocabGapAlive": 1,
+  "rootCauseExplain": 1.0,
+  "rootCauseN": 1,
+  "rootCauseExplained": 1,
+  "upstream": 7
+ },
+ "hardRows": [
+  {
+   "id": "seed-vocab-gap-bom-27000",
+   "tier": "usage",
+   "tags": [
+    "vocab-gap",
+    "root-cause"
+   ],
+   "survived": true,
+   "explained": true,
+   "goldHit": [
+    "873372977646105600"
+   ],
+   "rcGoldHit": [
+    "873372977646105600"
+   ],
+   "kwHits": [
+    {
+     "gold": "873372977646105600",
+     "source": "873372977646105600",
+     "rank": 2,
+     "chunks": [
+      1
+     ],
+     "keywords": [
+      "生产单位数量",
+      "隐藏字段",
+      "自动除以"
+     ]
+    }
+   ],
+   "sources": 4,
+   "upstream": 7,
+   "lat": [
+    2553.844213485718
+   ]
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "dryRun": false,
+  "product": 93,
+  "window": "2025-09",
+  "requestBudget": {
+    "cap": 60,
+    "used": 41,
+    "upstreamNote": "每请求=1 次真实上游(cache=0、无 type 混排、无并发)"
+  },
+  "service": {
+    "mode": "isolated-child",
+    "port": 62904,
+    "pid": 24768,
+    "rateProfile": "background",
+    "note": "一次性隔离子服务:corpus/landing/db 指向临时目录,不打穿主服务数据"
+  },
+  "scan": {
+    "term": "发版说明",
+    "pagesFetched": 11,
+    "releaseLikeDocs": 486,
+    "skippedCloud": 40,
+    "skippedCloudSample": [
+      {
+        "id": "87479764600354048",
+        "title": "【正式版本】苍穹 V2.0.034.19发版说明（2020.08.28）"
+      },
+      {
+        "id": "67328797950752512",
+        "title": "【灰度版本】星瀚 V2.0.031发版说明（2020.07.04）"
+      },
+      {
+        "id": "72634999190934528",
+        "title": "【灰度版本】星瀚 V2.0.032发版说明（2020.07.19）"
+      },
+      {
+        "id": "71577714171441920",
+        "title": "【正式版本】苍穹 V2.0.031.11发版说明（2020.07.16）"
+      },
+      {
+        "id": "76617023844754944",
+        "title": "【正式版本】苍穹 V2.0.032发版说明（2020.07.30）"
+      }
+    ],
+    "noVersionTitle": 393,
+    "inWindowTargets": 30,
+    "byMonth": {
+      "2025-09": 1,
+      "2025-10": 1,
+      "2025-11": 1,
+      "2025-12": 1,
+      "2026-01": 2,
+      "2026-03": 17,
+      "2026-05": 2,
+      "2026-06": 2,
+      "2026-07": 2,
+      "2026-08": 1
+    }
+  },
+  "ingest": {
+    "written": 30,
+    "unchanged": 0,
+    "error": 0,
+    "failed": 0,
+    "failures": []
+  },
+  "landing": {
+    "mainServiceLanding": {
+      "path": "C:\\Users\\Drivpe\\.lingeebuild\\landing",
+      "knowledge": 6,
+      "answer": 3,
+      "article": 0,
+      "total": 9
+    },
+    "releasenotesCountedInLanding": false,
+    "releasenotesFiles": 30,
+    "note": "landing 计数只含 ~/.lingeebuild/landing(C:\\Users\\Drivpe\\.lingeebuild\\landing),发版说明库独立目录不在其中;篇数见 releasenotesFiles"
+  },
+  "elapsedSec": 61.8,
+  "manifest": "C:\\Users\\Drivpe\\.lingeebuild\\releasenotes\\_manifest.json"
+}

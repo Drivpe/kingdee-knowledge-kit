@@ -1,0 +1,56 @@
+{
+  "ok": true,
+  "dryRun": false,
+  "product": 93,
+  "window": "2025-09",
+  "requestBudget": {
+    "cap": 60,
+    "used": 0,
+    "upstreamNote": "每请求=1 次真实上游(cache=0、无 type 混排、无并发)"
+  },
+  "service": {
+    "mode": "isolated-child",
+    "port": 65237,
+    "pid": 30680,
+    "rateProfile": "background",
+    "note": "一次性隔离子服务:corpus/landing/db 指向临时目录,不打穿主服务数据"
+  },
+  "scan": {
+    "resumed": true,
+    "manifestScannedAt": "2026-09-06T18:35:20",
+    "inWindowTargets": 30,
+    "byMonth": {
+      "2025-09": 1,
+      "2025-10": 1,
+      "2025-11": 1,
+      "2025-12": 1,
+      "2026-01": 2,
+      "2026-03": 17,
+      "2026-05": 2,
+      "2026-06": 2,
+      "2026-07": 2,
+      "2026-08": 1
+    }
+  },
+  "ingest": {
+    "written": 0,
+    "unchanged": 30,
+    "error": 0,
+    "failed": 0,
+    "failures": []
+  },
+  "landing": {
+    "mainServiceLanding": {
+      "path": "C:\\Users\\Drivpe\\.lingeebuild\\landing",
+      "knowledge": 6,
+      "answer": 3,
+      "article": 0,
+      "total": 9
+    },
+    "releasenotesCountedInLanding": false,
+    "releasenotesFiles": 30,
+    "note": "landing 计数只含 ~/.lingeebuild/landing(C:\\Users\\Drivpe\\.lingeebuild\\landing),发版说明库独立目录不在其中;篇数见 releasenotesFiles"
+  },
+  "elapsedSec": 0.7,
+  "manifest": "C:\\Users\\Drivpe\\.lingeebuild\\releasenotes\\_manifest.json"
+}
