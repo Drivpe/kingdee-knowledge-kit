@@ -108,13 +108,11 @@ def t_v4_ask_cache():
 check("v4 ask 缓存+chunk", t_v4_ask_cache)
 
 def t_v4_local():
-    d = call_http("/search", {"text": "需求用量 计算", "local": 1})
-    expect(d.get("local") is True and "results" in d, "local 路径异常")
     h = call_http("/health")
-    expect("5.0" in (h.get("service") or ""), h.get("service"))
-    expect((h.get("db") or {}).get("chunks", 0) >= 1, "语料库未沉淀 chunk")
-    return "chunks=%s" % h["db"]["chunks"]
-check("v4 本地语料检索+健康", t_v4_local)
+    expect("6." in (h.get("service") or ""), h.get("service"))
+    expect((h.get("landing") or {}).get("total", 0) >= 1, "landing 未沉淀")
+    return "landing=%s" % h["landing"]["total"]
+check("v6 落地缓存+健康", t_v4_local)
 
 # ---- v5 corpus 语料目录(写穿/stub/摄入/deprecate 标注) ----
 def t_v5_corpus_written():

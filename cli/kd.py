@@ -61,7 +61,51 @@ def cmd_search(a):
     _out(_http("/search?" + urllib.parse.urlencode(qs)))
 
 
+# ---- kd read --chunk(票 #20 / ADR-0007):官方 AI 引用溯源,匿名直连上游 ----
+# 匿名 GET /aisapi/document-chunks/{chunkId} 零 cookie 返回 200:{content(块全文),
+# documentId, entityId, entityType, id, title}——官方从不引用网页 URL,引用 = 标题+entityId+chunkId。
+# 注意:该能力 v6.2 应收编进检索服务(唯一事实源),当前为避免与票 #18 改服务文件冲突而暂放 CLI。
+CHUNK_API = "https://vip.kingdee.com/aisapi/document-chunks/"
+_CHUNK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+
+def _read_chunk(chunk_id):
+    """按 chunkId 匿名拉官方 chunk 全文。上游纪律:调用间隔 ≥3 秒,chunkId 不可枚举、勿批量。"""
+    cid = str(chunk_id).strip()
+    if not re.fullmatch(r"\d{3,}", cid):
+        _fail("bad_chunk_id", "非法 chunkId: %s(应为纯数字 ID)" % cid,
+              hint="chunkId 只能取自官方 AI 回答/分享对话的引用,不可编造",
+              example="kd read 2659901 --chunk")
+    req = urllib.request.Request(CHUNK_API + cid, headers={"User-Agent": _CHUNK_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _fail("chunk_not_found", "HTTP 404:无此 chunkId %s" % cid,
+                  hint="chunkId 不可枚举,请核对来源引用;上游请求间隔需 ≥3 秒(限频红线)",
+                  example="kd read 2659901 --chunk")
+        _fail("upstream_http_%s" % e.code, "官方 chunk 端点 HTTP %s(含 429 限频可能)" % e.code,
+              hint="等待 ≥3 秒再重试;持续失败说明上游接口可能变更,勿高频重试",
+              example="kd read 2659901 --chunk")
+    except Exception as e:
+        _fail("upstream_unreachable", str(e)[:200],
+              hint="检查网络连接;端点为匿名 GET " + CHUNK_API + "{chunkId}",
+              example="kd read 2659901 --chunk")
+    if not (isinstance(d, dict) and d.get("content")):
+        # 防「假 200」:上游可能 200 返回错误体,状态码不可靠(ADR-0007 备选取舍),以 content 字段为准
+        _fail("chunk_bad_payload", "上游 200 但未返回 content 字段(限频/假 200/接口变更)",
+              hint="等待 ≥3 秒再重试;原文片段: %s" % json.dumps(d, ensure_ascii=False)[:200],
+              example="kd read 2659901 --chunk")
+    return d
+
+
 def cmd_read(a):
+    if a.chunk:
+        # 票 #20 / ADR-0007:按官方 AI 引用 chunkId 还原块全文(标题+entityId+chunkId 引用形态的解析端)。
+        # v6.2 应收编进检索服务(唯一事实源),当前为避免与票 #18 改服务文件冲突而暂放 CLI。
+        _out(_read_chunk(a.id))
+        return
     # --kind 与 search 结果的 type 字段一一对应,agent 零思考照抄:
     # knowledge→/karticle(官方文档全文);answer→/question(问答帖全文,传 questionId);
     # article→/article(社区文章全文)。单条回答(/answer)已被问答帖全文覆盖,不再单独暴露。
@@ -75,13 +119,23 @@ def cmd_read(a):
 
 
 def cmd_ask(a):
+    # v6.1:服务端内置多路关键词拆解(症状词路+字段/实体名词路+产品词路,≤6 路 RRF 融合);
+    # --kw 显式关键词可跳过自动拆解。返回体含 routes[]/budget{max,used}/budget_exhausted。
     body = {"topK": a.topk}
     if a.kw:
         body["keywords"] = a.kw
     else:
         body["text"] = a.text
-    if a.product: body["productId"] = a.product
-    _out(_http("/ask", body))
+    if a.product is not None: body["productId"] = a.product
+    if a.budget: body["budget"] = a.budget
+    pack = _http("/ask", body, timeout=180)
+    routes = pack.get("routes") or []
+    if routes:
+        _prog("多路拆解 %d 路:" % len(routes), " | ".join(str(r.get("terms") or "") for r in routes))
+    b = pack.get("budget") or {}
+    _prog("上游预算: %s/%s%s" % (b.get("used"), b.get("max"),
+                                  "(已耗尽,返回已获资料)" if pack.get("budget_exhausted") else ""))
+    _out(pack)
 
 
 def cmd_share(a):
@@ -104,7 +158,8 @@ AI_SPEC_PROMPT = (
     "2. 并列信息用 Markdown 表格;\n"
     "3. 正文关键结论后标 [n],文末 ## 参考来源 列出 [n] 标题 —— 类型(官方文档/社区问答/社区文章);\n"
     "4. 资料未覆盖的部分明确写「现有资料未覆盖」,绝不编造菜单路径、字段名、接口名;\n"
-    "5. 官方文档确认的直接陈述,社区经验标注「来自社区经验」。用中文回答。"
+    "5. 根因引用规则:answer 引用用于症状对齐,根因解释优先引 knowledge/发版说明,只引 answer 不算根因可解释;「官方已修复」类问题以发版说明为终审依据;\n"
+    "6. 官方文档确认的直接陈述,社区经验标注「来自社区经验」。用中文回答。"
 )
 
 
@@ -196,16 +251,19 @@ def main():
     p = argparse.ArgumentParser(
         prog="kd",
         description="金蝶官方知识 CLI(匿名免费:零账号/零点数/零官方 LLM)。AI-first:默认输出 JSON,stdout=数据 stderr=进度;"
+                    "kd ask 是唯一常规入口(内置多路关键词拆解+预算),search/read 是手动细粒度调试命令;"
                     "kd ai 用你的模型通道合成带引用回答(遵循 docs/ANSWER-SPEC.md),或调用方 AI 拿 kd ask 资料包自己合成。",
         epilog='示例:\n'
-               '  kd search "信用额度控制" --product 93 --type answer\n'
+               '  kd ask "BOM分母变平方" --topk 4  # 常规问题一律用它:内置多路关键词拆解,一站式资料包\n'
+               '  kd ask --kw "信用额度" --kw "应收单 信用"  # 显式关键词(跳过自动拆解)\n'
+               '  kd search "信用额度控制" --product 93 --type answer  # 手动细粒度调试命令\n'
                '  kd read 402990431979506944                    # 读全文(kind 照抄 search 结果的 type)\n'
-               '  kd ask "信用额度怎么控制" --topk 4     # 一站式资料包(喂给当前模型合成)\n'
+               '  kd read 2659901 --chunk                       # 按官方 AI 引用 chunkId 匿名还原块全文(ADR-0007)\n'
                '  kd share https://vip.kingdee.com/link/s/xxxx   # 读官方分享对话',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("search", help="检索知识库(知识/问答/文章三种实体全返回)", epilog='示例: kd search "信用额度控制" --product 93 --type answer', formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = sub.add_parser("search", help="手动细粒度调试命令:检索知识库(常规问题请用 kd ask;三种实体全返回)", epilog='示例: kd search "信用额度控制" --product 93 --type answer', formatter_class=argparse.RawDescriptionHelpFormatter)
     s.add_argument("text", help="关键词(具体功能名/业务名词/报错词)")
     s.add_argument("--product", type=int, default=93, help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤")
     s.add_argument("--type", choices=["knowledge", "answer", "article"], default=None, help="按实体类型过滤")
@@ -214,20 +272,24 @@ def main():
     s.add_argument("--global_", dest="global_", action="store_true", help="跨全部产品")
     s.set_defaults(fn=cmd_search)
 
-    s = sub.add_parser("read", help="读全文:--kind 照抄 search 结果的 type 字段(knowledge=官方文档/answer=问答帖全文/article=社区文章)", epilog='示例:\n'
+    s = sub.add_parser("read", help="手动细粒度调试命令:读全文(常规问题请用 kd ask);--kind 照抄 search 结果的 type 字段(knowledge=官方文档/answer=问答帖全文/article=社区文章);--chunk 按官方 AI 引用 chunkId 匿名还原块全文(ADR-0007)", epilog='示例:\n'
                '  kd read 402990431979506944                    # knowledge 条目 → 官方文档全文\n'
                '  kd read 799346568250934528 --kind answer      # answer 条目 → 问题+全部回答+追问链(传 questionId)\n'
-               '  kd read 56784392135739905 --kind article      # article 条目 → 社区文章全文', formatter_class=argparse.RawDescriptionHelpFormatter)
-    s.add_argument("id", help="search 结果条目的 id(answer 条目传其 questionId)")
+               '  kd read 56784392135739905 --kind article      # article 条目 → 社区文章全文\n'
+               '  kd read 2659901 --chunk                       # 官方 AI 引用 chunkId → 块全文+entityId 映射(匿名,间隔≥3秒)', formatter_class=argparse.RawDescriptionHelpFormatter)
+    s.add_argument("id", help="search 结果条目的 id(answer 条目传其 questionId);--chunk 模式下传官方 AI 引用的 chunkId")
     s.add_argument("--kind", choices=["knowledge", "answer", "article"], default="knowledge",
                    help="实体类型,照抄 search 结果的 type 字段(默认 knowledge)")
+    s.add_argument("--chunk", action="store_true",
+                   help="按官方 AI 引用 chunkId 匿名读块全文(GET /aisapi/document-chunks/{id},ADR-0007 引用形态的溯源端)")
     s.set_defaults(fn=cmd_read)
 
-    s = sub.add_parser("ask", help="一站式资料包:检索+深读 topK 全文(供当前模型合成回答)", epilog='示例: kd ask "信用额度怎么控制" --topk 4 / kd ask --kw "信用额度" --kw "应收单 信用"', formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = sub.add_parser("ask", help="唯一常规入口:一站式资料包(内置多路关键词拆解 ≤6 路 RRF+深读 topK 全文+上游预算,供当前模型合成回答)", epilog='示例: kd ask "信用额度怎么控制" --topk 4 / kd ask --kw "信用额度" --kw "应收单 信用"', formatter_class=argparse.RawDescriptionHelpFormatter)
     s.add_argument("text", nargs="?", default=None, help="自然语言问题或关键词")
-    s.add_argument("--kw", action="append", default=None, help="多关键词模式(可重复)")
+    s.add_argument("--kw", action="append", default=None, help="多关键词模式(可重复,跳过自动拆解)")
     s.add_argument("--product", type=int, default=None)
     s.add_argument("--topk", type=int, default=4)
+    s.add_argument("--budget", type=int, default=None, help="上游请求硬上限覆盖(默认 16,超限即停)")
     s.set_defaults(fn=cmd_ask)
 
     s = sub.add_parser("share", help="读官方 AI 分享对话(传分享短链/页面链接/chatId)", epilog="示例: kd share https://vip.kingdee.com/link/s/xxxx", formatter_class=argparse.RawDescriptionHelpFormatter)

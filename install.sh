@@ -23,6 +23,7 @@ echo "[install] 安装到 $ROOT"
 
 mkdir -p "$ROOT/service" "$ROOT/bin" "$ROOT/logs"
 cp "$REPO/service/kingdee-ksearch-service.py" "$ROOT/service/"
+cp "$REPO/service/docstore.py" "$ROOT/service/"
 cp "$REPO/cli/kd.py" "$ROOT/bin/"
 cp "$REPO/cli/kd" "$ROOT/bin/"
 chmod +x "$ROOT/bin/kd"

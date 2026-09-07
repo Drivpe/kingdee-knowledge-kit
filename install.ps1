@@ -29,6 +29,7 @@ Step "安装到 $InstallRoot"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot "service"), $Bin, (Join-Path $InstallRoot "logs") | Out-Null
     Copy-Item (Join-Path $Repo "service\kingdee-ksearch-service.py") (Join-Path $InstallRoot "service\") -Force
+    Copy-Item (Join-Path $Repo "service\docstore.py") (Join-Path $InstallRoot "service\") -Force
     Copy-Item (Join-Path $Repo "cli\kd.py") $Bin -Force
     Copy-Item (Join-Path $Repo "cli\kd.cmd") $Bin -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $Repo "tests") | Out-Null
