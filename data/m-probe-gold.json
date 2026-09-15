@@ -1,0 +1,82 @@
+{
+ "name": "M 探针金标池",
+ "purpose": "测官方向量库实际覆盖度(issue #17)。每条金标 = 真实存在、正文含某 ERP 专有术语、但该术语搜不到本文档。",
+ "criterion": "正文含专有术语 + 该术语不在标题 + 用该术语搜不到本文档",
+ "mechanism": "搜索匹配正文而非标题(实测 highlight.content/title 比例)",
+ "builtAt": "2026-09-16 00:34",
+ "verifiedAt": "2026-09-16",
+ "verification": "check 复核 10/10 通过(每条可按 ID 读、用其术语搜不到)",
+ "sources": {
+  "文档枚举": "GET /knowledgeapi/knowledge/search (匿名, 27477 篇)",
+  "单篇读正文": "GET /knowledgeapi/knowledge/<entityId> (匿名)",
+  "判可达": "GET /aisapi/search?text=<术语> (匿名; 带 cookie 会返回 0)"
+ },
+ "stats": {
+  "docsScanned": 304,
+  "termsSearched": 60,
+  "candidatesRaw": 12,
+  "count": 10
+ },
+ "items": [
+  {
+   "entityId": "748249139359803136",
+   "title": "星空数据结转服务须知",
+   "probeTerm": "产品成本核算",
+   "searchTotal": 42953
+  },
+  {
+   "entityId": "882942224978206464",
+   "title": "单品序列号追溯和序列号追溯、批号追溯以及批号序列号综合追溯的区别",
+   "probeTerm": "生产订单",
+   "searchTotal": 17865
+  },
+  {
+   "entityId": "880869027420574464",
+   "title": "跨组织业务单据已经删除了，但是对应应收应付结算清单还在",
+   "probeTerm": "创建结算清单",
+   "searchTotal": 21545
+  },
+  {
+   "entityId": "880862191459557120",
+   "title": "创建结算清单的中间结果界面修改了结算价，但是生成的结算清单与修改的价格不一致 ",
+   "probeTerm": "委外领料单",
+   "searchTotal": 18450
+  },
+  {
+   "entityId": "880852679147655424",
+   "title": "库存状态一方为“可用”一方为“不参与核算”的跨组织业务处理",
+   "probeTerm": "存货核算",
+   "searchTotal": 10832
+  },
+  {
+   "entityId": "880385076897780224",
+   "title": "库存检验完成后自动生成库存状态转换单失败的解决方案",
+   "probeTerm": "库存请检单",
+   "searchTotal": 28885
+  },
+  {
+   "entityId": "846813569634209280",
+   "title": "金蝶AI套件云审计服务操作步骤",
+   "probeTerm": "固定资产",
+   "searchTotal": 6475
+  },
+  {
+   "entityId": "864463694938974976",
+   "title": "免建盘点表！PDA 扫库位码进行日常抽盘",
+   "probeTerm": "物料盘点作业",
+   "searchTotal": 72604
+  },
+  {
+   "entityId": "864480758457185280",
+   "title": "源单有N行同物料分录，支持按“源单行号”精准匹配",
+   "probeTerm": "生产入库单",
+   "searchTotal": 4519
+  },
+  {
+   "entityId": "853076241014833920",
+   "title": "物料属性中自制与外购有什么联系与区别?",
+   "probeTerm": "物料分组",
+   "searchTotal": 2341
+  }
+ ]
+}
