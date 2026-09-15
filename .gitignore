@@ -41,3 +41,6 @@ data/fullscan-progress.json
 data/fullscan-terms.json
 data/discovery-terms.json
 data/ksearch.db
+
+# 登录态通道侦察(端点契约/SSE schema,公开侧只留结论;2026-09-15 拍板)
+docs/research/2026-09-06-official-ai-frontend-recon.md
