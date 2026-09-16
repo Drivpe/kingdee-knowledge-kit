@@ -205,7 +205,7 @@
    "chatId": "884225148570638592",
    "conversational": true,
    "question": "如何查看MC版本",
-   "product": 0,
+   "product": 93,
    "queries": [
     "查看 MC 版本 管理中心",
     "管理中心 版本 查看"
@@ -232,7 +232,8 @@
      "id": "715996022857855744"
     }
    ],
-   "tier": "reference"
+   "tier": "reference",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "off-mc-patch-missing",
@@ -240,7 +241,7 @@
    "chatId": "884225148570638592",
    "conversational": true,
    "question": "本地升级MC版本显示本地补丁文件不存在",
-   "product": 0,
+   "product": 93,
    "queries": [
     "MC升级 补丁文件 不存在",
     "MC 本地补丁 目录 升级"
@@ -267,7 +268,8 @@
      "id": "675628465596193024"
     }
    ],
-   "tier": "reference"
+   "tier": "reference",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "off-mc-download",
@@ -275,7 +277,7 @@
    "chatId": "884225148570638592",
    "conversational": true,
    "question": "MC升级补丁包下载地址",
-   "product": 0,
+   "product": 93,
    "queries": [
     "MC 升级补丁包 下载",
     "MC补丁 下载地址 容器化"
@@ -302,7 +304,8 @@
      "id": "675628465596193024"
     }
    ],
-   "tier": "reference"
+   "tier": "reference",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "off-field-types",
@@ -521,7 +524,7 @@
    "id": "exp-bom-molecule-limit",
    "source": "expert",
    "question": "BOM导入失败提示字段基本单位用量分子的值0超出限定范围",
-   "product": 0,
+   "product": 93,
    "queries": [
     "BOM导入 分子 超出限定范围",
     "基本单位用量 分子 0 保存失败"
@@ -536,13 +539,14 @@
      "id": "756249637219823360"
     }
    ],
-   "tier": "usage"
+   "tier": "usage",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "exp-plan-bom-ratio",
    "source": "expert",
    "question": "计划运算后计划订单的分子分母与BOM中设置的不一致",
-   "product": 0,
+   "product": 1,
    "queries": [
     "计划订单 分子分母 BOM 不一致",
     "计划BOM 分子分母 约分 跳层"
@@ -561,13 +565,14 @@
      "id": "626092735501275904"
     }
    ],
-   "tier": "usage"
+   "tier": "usage",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "exp-jump-layer-ratio",
    "source": "expert",
    "question": "生产订单的用料清单多次跳层后分子分母数据不对,如何排查",
-   "product": 0,
+   "product": 1,
    "queries": [
     "生产订单 用料清单 跳层 分子分母",
     "跳层 分子分母 数据不对 排查"
@@ -578,7 +583,8 @@
      "id": "784081182786381568"
     }
    ],
-   "tier": "usage"
+   "tier": "usage",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "exp-mrp-demand-error",
@@ -639,7 +645,7 @@
    "id": "exp-production-unit-qty",
    "source": "expert",
    "question": "BOM中分子分母设置为1:1,但新增生产用料清单时,分母用量显示为4,导致实际用量被除以4",
-   "product": 0,
+   "product": 93,
    "queries": [
     "BOM 生产单位数量 隐藏字段",
     "生产用料清单 分母用量 异常"
@@ -650,7 +656,8 @@
      "id": "873372977646105600"
     }
    ],
-   "tier": "usage"
+   "tier": "usage",
+   "productSource": "2026-09-16 由 gold 文档 products[].id 实测归属 (原值 0)"
   },
   {
    "id": "exp-skip-layer-mrp",

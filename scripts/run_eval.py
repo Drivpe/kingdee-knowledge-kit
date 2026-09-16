@@ -60,11 +60,18 @@ def _tier_of(case_id, cases):
 
 def run_case(url, case, pipeline, size, sleep):
     lists, lat, cached = [], [], 0
+    # product=0 防御(2026-09-16):不带产品过滤会在全产品线上万个文档里检索,
+    # 目标文档被噪声淹没,指标失去意义。实测同一用例 productId=0 → r5=0.00,
+    # productId=93 → r5=1.00(候选池 1122 → 131)。此处显式告警,不静默退化。
+    pid = case.get("product", 0)
+    if not pid:
+        print("  !! %s product=0(无产品过滤):指标可能失真,建议补 product 字段"
+              % case["id"], file=sys.stderr)
     for q in case["queries"]:
         if not budget_left():
             print("  !! %s 上游预算耗尽,剩余 query 跳过" % case["id"], file=sys.stderr)
             break
-        body = {"text": q, "productId": case.get("product", 0), "pageSize": size}
+        body = {"text": q, "productId": pid, "pageSize": size}
         if pipeline:
             body["pipeline"] = pipeline
         try:
@@ -144,10 +151,15 @@ def run_hard_case(url, case, topk):
     except Exception as e:
         return {"id": case["id"], "tier": case.get("tier"), "tags": case.get("hardMetric") or [],
                 "error": str(e)[:120], "survived": False, "explained": False, "goldHit": [],
-                "rcGoldHit": [], "kwHits": [], "sources": 0, "upstream": 0, "lat": []}
+                "rcGoldHit": [], "kwHits": [], "sources": 0, "upstream": 0, "lat": [],
+                "exhausted": True}   # 请求异常同样不可采信,计入无效轮
     up = track_up(d)
     sources = d.get("sources") or []
     gset = gold_ids(case)
+    # budget_exhausted 防线(2026-09-16):服务端单次 /ask 预算被耗尽时,编排会提前收尾,
+    # sources 不完整。票 #21 曾把这种残轮的 0 命中当成指标恶化并据此关闭技术路线,
+    # 故此处显式记录,聚合层据它判该轮无效。
+    exhausted = bool(d.get("budget_exhausted"))
     gold_hit = sorted({k for s in sources for k in _source_keys(s) if k in gset})
     kw_hits, rc_hit = [], set()
     for s in sources:
@@ -167,17 +179,27 @@ def run_hard_case(url, case, topk):
     return {"id": case["id"], "tier": case.get("tier"), "tags": case.get("hardMetric") or [],
             "survived": bool(gold_hit), "explained": bool(rc_hit), "goldHit": gold_hit,
             "rcGoldHit": sorted(rc_hit), "kwHits": kw_hits, "sources": len(sources),
-            "upstream": up, "lat": [ms]}
+            "upstream": up, "lat": [ms], "exhausted": exhausted}
 
 def hard_agg(hrows):
     vg = [r for r in hrows if "vocab-gap" in r["tags"]]
     rc = [r for r in hrows if "root-cause" in r["tags"]]
+    # 残轮(预算耗尽)的命中结果不可采信:编排未跑完,0 命中不等于检索失败。
+    # 聚合层同时给出全量与剔除残轮两组数字,后者才是有效口径。
+    hrows_valid = [r for r in hrows if not r.get("exhausted")]
+    vg_v = [r for r in hrows_valid if "vocab-gap" in r["tags"]]
+    rc_v = [r for r in hrows_valid if "root-cause" in r["tags"]]
     return {"vocabGapSurvival": (sum(1 for r in vg if r["survived"]) / len(vg)) if vg else None,
             "vocabGapN": len(vg),
             "vocabGapAlive": sum(1 for r in vg if r["survived"]),
             "rootCauseExplain": (sum(1 for r in rc if r["explained"]) / len(rc)) if rc else None,
             "rootCauseN": len(rc),
             "rootCauseExplained": sum(1 for r in rc if r["explained"]),
+            "exhaustedN": sum(1 for r in hrows if r.get("exhausted")),
+            "vocabGapSurvivalValid": (sum(1 for r in vg_v if r["survived"]) / len(vg_v)) if vg_v else None,
+            "vocabGapNValid": len(vg_v),
+            "rootCauseExplainValid": (sum(1 for r in rc_v if r["explained"]) / len(rc_v)) if rc_v else None,
+            "rootCauseNValid": len(rc_v),
             "upstream": sum(r["upstream"] for r in hrows)}
 
 # ---------- rg 离线语料评测(配置名 "rg",不碰 HTTP) ----------

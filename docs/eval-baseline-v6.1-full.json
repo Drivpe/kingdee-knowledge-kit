@@ -1,0 +1,587 @@
+{
+ "generatedAt": "2026-09-16 01:18:58",
+ "evalset": {
+  "file": "evalset.json",
+  "version": "v6-seed1 (2026-09-06, v6 评测重建起步:新增首条 usage 金标种子 seed-vocab-gap-bom-27000[ADR-0005「评测」节],v3 的 26 例原样保留作过渡对照;分层:usage=正式金标 / reference=官方对话参考);2026-09-06 增补第 2 条 usage 金标 use-bom-designer-page-2026-09-06(产品线串线案例,教训=product 路由粘性与 products 核对,票 #17-#19)",
+  "pool": 28,
+  "sampled": 28,
+  "seed": null
+ },
+ "args": {
+  "configs": "baseline",
+  "size": 10,
+  "sleep": 1.0,
+  "topk": 4,
+  "sample": 0,
+  "seed": 42,
+  "maxRequests": 120,
+  "hardMetrics": true
+ },
+ "upstreamCalls": {
+  "used": 72,
+  "cap": 120
+ },
+ "results": {
+  "baseline": {
+   "rows": [
+    {
+     "id": "off-trace-batch",
+     "source": "official-share",
+     "gold": 9,
+     "returned": 17,
+     "r5": 0.1111111111111111,
+     "r10": 0.2222222222222222,
+     "mrr": 0.5,
+     "lat": [
+      469.562292098999,
+      416.10240936279297
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-asset-estimate",
+     "source": "official-share",
+     "gold": 1,
+     "returned": 17,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      566.6213035583496,
+      796.0793972015381
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-server-where",
+     "source": "official-share",
+     "gold": 10,
+     "returned": 19,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      562.0911121368408,
+      703.779935836792
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-mc-exclusive",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 12,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      395.8871364593506,
+      575.8841037750244
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-mc-exclusive-persist",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 20,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      447.97682762145996,
+      515.0983333587646
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-mc-version-view",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 11,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      498.2156753540039,
+      692.8892135620117
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-mc-patch-missing",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 17,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      540.374755859375,
+      743.6156272888184
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-mc-download",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 13,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      450.65855979919434,
+      470.4122543334961
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-field-types",
+     "source": "official-share",
+     "gold": 15,
+     "returned": 18,
+     "r5": 0.06666666666666667,
+     "r10": 0.06666666666666667,
+     "mrr": 0.25,
+     "lat": [
+      613.6505603790283,
+      642.2064304351807
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-currency-bind",
+     "source": "official-share",
+     "gold": 8,
+     "returned": 16,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      454.0708065032959,
+      443.02845001220703
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-price-scene",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 20,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      562.3452663421631,
+      606.3122749328613
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-bom-27000",
+     "source": "official-share",
+     "gold": 10,
+     "returned": 26,
+     "r5": 0.1,
+     "r10": 0.3,
+     "mrr": 0.3333333333333333,
+     "lat": [
+      541.6276454925537,
+      441.4501190185547,
+      466.7692184448242
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-bom-molecule-limit",
+     "source": "expert",
+     "gold": 2,
+     "returned": 20,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      429.1369915008545,
+      650.6173610687256
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-plan-bom-ratio",
+     "source": "expert",
+     "gold": 3,
+     "returned": 11,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      529.2413234710693,
+      509.55939292907715
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-jump-layer-ratio",
+     "source": "expert",
+     "gold": 1,
+     "returned": 17,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      541.6824817657471,
+      523.1959819793701
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-mrp-demand-error",
+     "source": "expert",
+     "gold": 1,
+     "returned": 18,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 0.3333333333333333,
+     "lat": [
+      408.0004692077637,
+      556.1060905456543
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-min-package",
+     "source": "expert",
+     "gold": 1,
+     "returned": 15,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 0.2,
+     "lat": [
+      472.68152236938477,
+      395.7836627960205
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-forward-query-usage",
+     "source": "expert",
+     "gold": 2,
+     "returned": 19,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      511.6465091705322,
+      428.65681648254395
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-production-unit-qty",
+     "source": "expert",
+     "gold": 1,
+     "returned": 19,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      628.7875175476074,
+      470.3021049499512
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-skip-layer-mrp",
+     "source": "expert",
+     "gold": 3,
+     "returned": 17,
+     "r5": 0.6666666666666666,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      593.5747623443604,
+      593.2612419128418
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-multilevel-export",
+     "source": "expert",
+     "gold": 1,
+     "returned": 14,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 0.5,
+     "lat": [
+      532.252311706543,
+      425.9073734283447
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-virtual-part",
+     "source": "expert",
+     "gold": 2,
+     "returned": 18,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      603.7943363189697,
+      404.6800136566162
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "exp-skip-layer-param",
+     "source": "expert",
+     "gold": 1,
+     "returned": 17,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      582.2634696960449,
+      514.0342712402344
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-credit-lock",
+     "source": "official-share",
+     "gold": 5,
+     "returned": 17,
+     "r5": 0.4,
+     "r10": 0.4,
+     "mrr": 0.5,
+     "lat": [
+      398.9379405975342,
+      757.1914196014404
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "off-account-subject",
+     "source": "official-share",
+     "gold": 1,
+     "returned": 13,
+     "r5": 1.0,
+     "r10": 1.0,
+     "mrr": 1.0,
+     "lat": [
+      818.3023929595947,
+      696.7978477478027
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "use-bom-27000",
+     "source": "usage",
+     "gold": 5,
+     "returned": 26,
+     "r5": 0.4,
+     "r10": 0.6,
+     "mrr": 0.5,
+     "lat": [
+      475.1551151275635,
+      358.03723335266113,
+      675.3683090209961
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "seed-vocab-gap-bom-27000",
+     "source": "usage",
+     "gold": 3,
+     "returned": 20,
+     "r5": 0.3333333333333333,
+     "r10": 0.3333333333333333,
+     "mrr": 0.3333333333333333,
+     "lat": [
+      384.11736488342285,
+      399.96957778930664
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    },
+    {
+     "id": "use-bom-designer-page-2026-09-06",
+     "source": "usage",
+     "gold": 5,
+     "returned": 19,
+     "r5": 0.0,
+     "r10": 0.0,
+     "mrr": 0.0,
+     "lat": [
+      583.9109420776367,
+      561.720609664917
+     ],
+     "cached": 0,
+     "stats": [
+      null
+     ]
+    }
+   ],
+   "agg": {
+    "r5": 0.3956349206349206,
+    "r10": 0.4257936507936508,
+    "mrr": 0.37321428571428567,
+    "p50": 529.2,
+    "p95": 757.2,
+    "cached": 0
+   },
+   "byTier": {
+    "usage": {
+     "agg": {
+      "r5": 0.6714285714285715,
+      "r10": 0.7095238095238096,
+      "mrr": 0.5619047619047619,
+      "p50": 514.0,
+      "p95": 650.6,
+      "cached": 0
+     },
+     "n": 14
+    },
+    "reference": {
+     "agg": {
+      "r5": 0.11984126984126985,
+      "r10": 0.14206349206349206,
+      "mrr": 0.18452380952380953,
+      "p50": 541.6,
+      "p95": 796.1,
+      "cached": 0
+     },
+     "n": 14
+    }
+   }
+  }
+ },
+ "hard": {
+  "vocabGapSurvival": 1.0,
+  "vocabGapN": 1,
+  "vocabGapAlive": 1,
+  "rootCauseExplain": 1.0,
+  "rootCauseN": 1,
+  "rootCauseExplained": 1,
+  "upstream": 14
+ },
+ "hardRows": [
+  {
+   "id": "seed-vocab-gap-bom-27000",
+   "tier": "usage",
+   "tags": [
+    "vocab-gap",
+    "root-cause"
+   ],
+   "survived": true,
+   "explained": true,
+   "goldHit": [
+    "873372977646105600"
+   ],
+   "rcGoldHit": [
+    "873372977646105600"
+   ],
+   "kwHits": [
+    {
+     "gold": "873372977646105600",
+     "source": "873372977646105600",
+     "rank": 2,
+     "chunks": [
+      1
+     ],
+     "keywords": [
+      "生产单位数量",
+      "隐藏字段",
+      "自动除以"
+     ]
+    }
+   ],
+   "sources": 4,
+   "upstream": 14,
+   "lat": [
+    5648.328542709351
+   ]
+  }
+ ]
+}
