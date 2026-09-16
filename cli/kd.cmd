@@ -1,19 +1,29 @@
 @echo off
-rem kd.cmd — 金蝶官方知识 CLI 包装(Windows cmd / PowerShell)。
-rem Windows 不认 Unix 她bang,只认扩展名,故必须与无扩展名的 cli/kd(bash shim)并存:
-rem Git Bash 不会把裸名 kd 解析到 kd.cmd,反之 cmd 也不认无扩展名的 kd。
-rem Python 解释器探测:py 启动器优先(能自动选 3.x),再退 PATH 上的 python / python3。
-rem 本文件曾把路径写死为 %LOCALAPPDATA%\...\Python312\python.exe,装了 3.11/3.13
-rem 或非默认安装位置即静默失效,报错还只是"不是内部或外部命令"——故改为探测。
+rem kd.cmd - kingdee-knowledge CLI wrapper for Windows cmd / PowerShell.
+rem
+rem Windows does not honour Unix shebangs: it resolves executables by extension
+rem (.exe/.cmd/.bat), so the extension-less cli/kd (bash shim) is unreachable
+rem from cmd/PowerShell. Conversely MSYS2/Git Bash does not resolve the bare
+rem name `kd` to kd.cmd. Both shims must therefore exist.
+rem
+rem Python discovery: `py` launcher first (picks a 3.x automatically), then
+rem `python` on PATH. This file used to hardcode
+rem   %LOCALAPPDATA%\Programs\Python\Python312\python.exe
+rem which silently broke for anyone on 3.11/3.13 or a non-default install root,
+rem failing with only "not recognized as an internal or external command".
+rem
+rem NOTE: keep this file ASCII-only. cmd.exe reads .cmd in the OEM codepage
+rem (GBK on zh-CN Windows); non-ASCII comments corrupt command parsing.
 setlocal
 set "KDPY="
-for %%P in (py python python3) do (
-    if not defined KDPY (
-        %%P -c "import sys" >nul 2>&1 && set "KDPY=%%P"
-    )
-)
+where py >nul 2>&1
+if %ERRORLEVEL% EQU 0 set "KDPY=py"
+if defined KDPY goto :run
+where python >nul 2>&1
+if %ERRORLEVEL% EQU 0 set "KDPY=python"
+:run
 if not defined KDPY (
-    echo kd: 未找到可用的 Python^(需要 3.8+^);请安装 Python 或重跑安装器 1>&2
+    echo kd: no usable Python found ^(3.8+ required^). Install Python or re-run the installer. 1>&2
     exit /b 1
 )
 %KDPY% "%~dp0kd.py" %*

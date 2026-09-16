@@ -1,4 +1,4 @@
-# install.ps1 — kingdee-knowledge-kit 一键安装(Windows)
+﻿# install.ps1 — kingdee-knowledge-kit 一键安装(Windows)
 # 用法: powershell -ExecutionPolicy Bypass -File install.ps1
 #   开关: -InstallRoot <dir>  -NoPath  -NoSkills  -NoStart  -DryRun  -Port 4097
 # 效果: 服务+kd CLI 装到 ~\.kingdee-kit,bin 加入用户 PATH,技能装到 ~\.agents\skills,
