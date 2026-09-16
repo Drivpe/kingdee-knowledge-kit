@@ -3,7 +3,7 @@
 路径全部参数化,双环境自适应:
   KSEARCH_URL  服务基址(默认 http://127.0.0.1:4097)
   KD_PY        kd.py 路径(默认依次找 %USERPROFILE%/.kingdee-kit/bin → %USERPROFILE%/.lingeebuild/bin)
-用法: python verify_ksearch.py            # 全量(约 1 分钟;kd ai 检查用本地假 OpenAI 兼容端点,不需要真实模型通道)
+用法: python verify_ksearch.py            # 全量(约 1 分钟;需服务在跑,会消耗真实上游请求)
 退出码: 0=全部通过 1=有失败
 """
 import json, os, shutil, subprocess, sys, threading, time, urllib.request, urllib.error
@@ -22,6 +22,7 @@ KD_CMD = os.path.splitext(KD_PY)[0] + ".cmd" if KD_PY and os.path.exists(os.path
 PYTHON = sys.executable
 
 RESULTS = []
+SKIPPED = []
 
 def call_http(path, body=None, method=None, timeout=90):
     data = json.dumps(body).encode() if body is not None else None
@@ -31,20 +32,26 @@ def call_http(path, body=None, method=None, timeout=90):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
+def expect(cond, msg=""):
+    if not cond:
+        raise AssertionError(msg)
+    return msg
+
+class Skipped(Exception):
+    """环境不适用(不是失败,也不计入 PASS):该断言在当前平台无意义。"""
+
 def check(name, fn):
     try:
         detail = fn()
         RESULTS.append((name, True, detail))
         print("PASS  %s  %s" % (name, detail or ""))
+    except Skipped as e:
+        SKIPPED.append((name, str(e)))
+        print("SKIP  %s  %s" % (name, e))
     except Exception as e:
         RESULTS.append((name, False, str(e)[:160]))
         print("FAIL  %s  %s" % (name, str(e)[:160]))
     time.sleep(0.3)
-
-def expect(cond, msg=""):
-    if not cond:
-        raise AssertionError(msg)
-    return msg
 
 # ---- 服务端点 ----
 check("health", lambda: expect(call_http("/health").get("anonymous") is True, call_http("/health").get("service")))
@@ -52,7 +59,8 @@ def t_manifest():
     m = call_http("/manifest")
     cmds = " | ".join(m["cli"]["commands"])
     expect(len(m["endpoints"]) >= 9, "endpoints=%d" % len(m["endpoints"]))
-    expect("kd read" in cmds and "kd ai" in cmds, "v2 命令面在清单中")
+    expect("kd read" in cmds and "kd ask" in cmds, "命令面在清单中")
+    expect("kd ai" not in cmds, "kd ai 已删除(ADR-0008)")
     expect("kd question" not in cmds and "kd article" not in cmds, "旧命令已退役")
     return "%d endpoints" % len(m["endpoints"])
 check("manifest", t_manifest)
@@ -113,6 +121,27 @@ def t_v4_local():
     expect((h.get("landing") or {}).get("total", 0) >= 1, "landing 未沉淀")
     return "landing=%s" % h["landing"]["total"]
 check("v6 落地缓存+健康", t_v4_local)
+
+def t_budget_consistency():
+    """预算值是单一事实源(query_routes.json),服务与 CLI 的文字必须与它同步。
+    此前四处文档写 16/18 而配置写 32,导致同一份资料包被三套口径描述——用断言钉死。"""
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = json.load(open(os.path.join(root, "service", "query_routes.json"), encoding="utf-8"))
+    want = int((cfg.get("budget") or {}).get("maxUpstreamPerAsk"))
+    h = call_http("/health")
+    got = int((h.get("ask") or {}).get("budgetMax"))
+    expect(got == want, "/health.ask.budgetMax=%s 与 query_routes.json=%s 不一致" % (got, want))
+    # 服务源码的散文说明不得残留其他预算数字
+    src = open(os.path.join(root, "service", "kingdee-ksearch-service.py"), encoding="utf-8").read()
+    for m in re.finditer(r"预算硬上限[^;\n]*?≤(\d+)", src):
+        expect(int(m.group(1)) == want, "服务 docstring 预算值 %s ≠ 配置 %s" % (m.group(1), want))
+    kdsrc = open(os.path.join(root, "cli", "kd.py"), encoding="utf-8").read()
+    m = re.search(r'--budget.*?默认 (\d+)', kdsrc)
+    if m:
+        expect(int(m.group(1)) == want, "kd --budget help 默认值 %s ≠ 配置 %s" % (m.group(1), want))
+    return "预算=%s(服务/CLI/docstring 三处一致)" % want
+check("预算值全链路一致", t_budget_consistency)
 
 # ---- v5 corpus 语料目录(写穿/stub/摄入/deprecate 标注) ----
 def t_v5_corpus_written():
@@ -227,7 +256,8 @@ if KD_PY:
     check("kd health", lambda: expect(kd(["health"])["anonymous"] is True, "via kd.py"))
     def t_kd_manifest():
         cmds = " | ".join(kd(["manifest"])["cli"]["commands"])
-        expect("kd read" in cmds and "kd ai" in cmds, "v2 命令面")
+        expect("kd read" in cmds and "kd ask" in cmds, "命令面")
+        expect("kd ai" not in cmds, "kd ai 已删除(ADR-0008)")
         return "endpoints"
     check("kd manifest", t_kd_manifest)
     check("kd search 中文参数", lambda: expect(len(kd(["search", "信用额度控制", "--product", "0", "--size", "3"])["results"]) >= 1, "results≥1"))
@@ -252,28 +282,7 @@ if KD_PY:
         return "via %s" % bash
     check("kd 裸名解析(bash shim)", t_kd_bare_name)
 
-# ---- kd ai:假 OpenAI 兼容端点(第 1 次请求回关键词 JSON,第 2 次回 Markdown 回答) ----
-def start_fake_kai():
-    state = {"n": 0}
-    class H(BaseHTTPRequestHandler):
-        def do_POST(self):
-            n = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(n)
-            state["n"] += 1
-            content = ("[\"信用额度\", \"应收单 信用\"]" if state["n"] == 1 else
-                       "## 解决方案\n\n1. 检查信用额度控制设置 [1]。\n\n## 参考来源\n\n[1] 测试标题 —— 官方文档")
-            b = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(b)))
-            self.end_headers()
-            self.wfile.write(b)
-        def log_message(self, *a):
-            pass
-    srv = HTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv
-
+# ---- v6.2:合成权在调用方(ADR-0008)——kd ai 已删除,资料包须自带召回信号(ADR-0010) ----
 if KD_PY:
     def kd_env(args, env, timeout=240):
         r = subprocess.run([PYTHON, KD_PY] + args, capture_output=True, text=True,
@@ -281,23 +290,65 @@ if KD_PY:
         expect(r.returncode == 0, "exit=%s stderr=%s" % (r.returncode, r.stderr[:160]))
         return json.loads(r.stdout)
 
-    _FAKE_SRV = start_fake_kai()
-    _FAKE = "http://127.0.0.1:%d" % _FAKE_SRV.server_address[1]
-    def t_ai_ok():
-        d = kd_env(["ai", "信用额度怎么控制", "--topk", "2"], dict(os.environ, KAI_BASE=_FAKE, KSEARCH_URL=B))
-        expect(d.get("ok") is True and d.get("fallback") is False, "fallback=%s" % d.get("fallback"))
-        expect(len(d.get("answer") or "") > 10 and d.get("keywords"), "answer=%d 字 kw=%s" % (len(d.get("answer") or ""), d.get("keywords")))
-    check("kd ai 正常(假通道)", t_ai_ok)
-    def t_ai_fallback():
-        d = kd_env(["ai", "信用额度怎么控制", "--topk", "2"], dict(os.environ, KAI_BASE="http://127.0.0.1:9", KSEARCH_URL=B))
-        expect(d.get("fallback") is True and d.get("sources"), "fallback=true sources=%d" % len(d.get("sources") or []))
-    check("kd ai 降级(死通道)", t_ai_fallback)
+    def t_ai_removed():
+        r = subprocess.run([PYTHON, KD_PY, "ai", "任何问题"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60,
+                           env=dict(os.environ, KSEARCH_URL=B))
+        expect(r.returncode == 2, "kd ai 应报用法错误(exit=2),实得 %s" % r.returncode)
+        expect("invalid choice" in (r.stderr or ""), "stderr 应为 invalid choice")
+    check("kd ai 已移除(ADR-0008)", t_ai_removed)
 
-    if KD_CMD:
-        check("kd.cmd 包装", lambda: expect(subprocess.run(["cmd", "/c", KD_CMD, "health"], capture_output=True,
-              text=True, encoding="utf-8", errors="replace", timeout=60).returncode == 0, "exit=0"))
+    def t_ask_brief_and_raw_route():
+        # 两个断言组共用一次 ask:同一条上游调用跑两遍纯属浪费(各 300s 超时、各消耗一轮预算)
+        d = kd_env(["ask", "BOM 分子分母", "--topk", "2"], dict(os.environ, KSEARCH_URL=B), timeout=300)
+        b = d.get("synthesisBrief")
+        expect(isinstance(b, dict), "synthesisBrief 缺失")
+        # 客观召回信号必须齐:无信号则合成方只能凭正文猜,不算判定(ADR-0010)
+        for k in ("sourceCount", "topScores", "routeKinds", "budgetExhausted", "recallHint"):
+            expect(k in b, "synthesisBrief 缺字段 %s" % k)
+        expect(isinstance(b["topScores"], list), "topScores 应为列表")
+        rk = b.get("routeKinds") or []
+        expect("raw:question" in rk, "routeKinds 应含原句路(ADR-0009),实得 %s" % rk)
+        routes = d.get("routes") or []
+        expect(routes and routes[0].get("kind") == "raw:question",
+               "原句路应在首位(ADR-0009),实得 %s" % [r.get("kind") for r in routes[:3]])
+        expect(int(routes[0].get("sortsType") or 0) == 1, "原句路 sortsType 应为 1")
+        return "sources=%s routes=%d 首路=%s(st=%s)" % (b["sourceCount"], len(routes),
+                                                       routes[0].get("kind"), routes[0].get("sortsType"))
+    check("kd ask 的 synthesisBrief 与原句路首位(单次调用双断言)", t_ask_brief_and_raw_route)
+
+    def t_kd_shim():
+        """两个 shim(kd / kd.cmd)是平台分裂的产物,不是冗余:
+           - Unix 系(含 Git Bash):裸名 `kd` 走无扩展名 bash shim,MSYS2 不会解析到 .cmd;
+           - Windows cmd/PowerShell:不认她bang,只认扩展名,走 kd.cmd。
+           本断言按平台只验本平台该走的那条;另一条在其他平台无意义,标 SKIP 而非 FAIL。"""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if os.name == "nt":
+            if not KD_CMD:
+                raise Skipped("未安装 kd.cmd(Windows 下正常安装器会装)")
+            # 真跑一次:验证探测逻辑挑得出解释器,而不是只判文件在不在
+            r = subprocess.run(["cmd", "/c", KD_CMD, "health"], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=60)
+            expect(r.returncode == 0, "kd.cmd health exit=%s stderr=%s" % (r.returncode, (r.stderr or "")[:120]))
+            expect('"service"' in (r.stdout or ""), "kd.cmd 未回出 JSON: %s" % (r.stdout or "")[:80])
+            # 回归钉子:Python 路径不得再被写死(装 3.11/3.13 会静默失效)
+            src = open(os.path.join(root, "cli", "kd.cmd"), encoding="utf-8").read()
+            expect("Python312" not in src, "kd.cmd 又出现了硬编码 Python312,应走 py/python 探测")
+            return "cmd.exe 真实调用通过,解释器为探测所得"
+        shim = os.path.join(root, "cli", "kd")
+        if not os.path.exists(shim):
+            raise Skipped("cli/kd shim 不存在")
+        r = subprocess.run(["bash", shim, "health"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=60)
+        expect(r.returncode == 0, "cli/kd health exit=%s stderr=%s" % (r.returncode, (r.stderr or "")[:120]))
+        expect('"service"' in (r.stdout or ""), "cli/kd 未回出 JSON: %s" % (r.stdout or "")[:80])
+        return "bash shim 真实调用通过(kd.cmd 属 Windows,本平台跳过)"
+    check("kd shim(本平台真实调用)", t_kd_shim)
 
 # ---- 汇总 ----
 fails = [r for r in RESULTS if not r[1]]
-print("\n==== %d/%d PASS ====" % (len(RESULTS) - len(fails), len(RESULTS)))
+print("\n==== %d/%d PASS%s ====" % (len(RESULTS) - len(fails), len(RESULTS),
+                                   (",%d SKIP" % len(SKIPPED)) if SKIPPED else ""))
+for n, why in SKIPPED:
+    print("  SKIP %s: %s" % (n, why))
 sys.exit(1 if fails else 0)

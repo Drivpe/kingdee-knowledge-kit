@@ -48,3 +48,4 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 
 `.scratch/v2-ai-first-refactor/issues/` 有 v2 重构期的 10 张本地 markdown 工单(to-tickets 产物)。
 切换到 GitHub Issues 后它们**不迁移**、视为已完成的历史档案;新工单一律进 GitHub Issues。
+注:这些工单所依附的 spec `docs/specs/v2-ai-first-refactor.md` 已删除(方向被 ADR-0008 取代,2026-09-16)。

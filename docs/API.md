@@ -1,18 +1,19 @@
 # 金蝶知识检索服务 API(v3.2 / 套件 v2.0)
 
 逆向金蝶云社区官方后端,本地封装。**零账号、零点数、零凭据、零浏览器依赖**——检索/全文/问答包/分享对话全匿名;
-合成回答两条路:`kd ai` 走你的模型通道,或调用方 AI 拿资料包自己写。
+**本套件零模型依赖,只产资料包不合成回答**(ADR-0008):拿到资料包后由调用方 AI 按 `docs/ANSWER-SPEC.md` 自己合成。
 
 - 基址:`http://127.0.0.1:4097`(可用环境变量 `KSEARCH_URL` 指向其他实例)
 - 启动:`scripts/start-service.ps1`(Windows)/ `scripts/start-service.sh`(*nix)
 - 代码:`service/kingdee-ksearch-service.py`(纯标准库,无 pip 依赖)
 - 自发现:`GET /manifest` 返回机器可读能力清单(端点/参数/实体/CLI 路径),agent 一次 GET 即会用
 
-## kd CLI(v2.0,7 命令)
+## kd CLI(7 命令)
 
-`search / read / ask / ai / share / manifest / health`。`read` 的 `--kind` 照抄 search 结果的 `type`
+`search / read / ask / share / manifest / health` 六条 + 参数辅助。`read` 的 `--kind` 照抄 search 结果的 `type`
 (`knowledge→/karticle`、`answer→/question`、`article→/article`;单条回答端点 `/answer` 仍可用但 CLI 不再单独暴露,
-问答帖全文已覆盖)。AI-first 契约与 `kd ai` 的模型通道(`KAI_BASE` 勿带 `/v1`、`KAI_MODEL`)见根 README「进阶」。
+问答帖全文已覆盖)。AI-first 契约见根 README「进阶」。
+**`kd ai` 已删除、`KAI_BASE` / `KAI_MODEL` 已废除**(ADR-0008,合成权移交调用方)。
 
 ## GET / 或 /manifest — 机器可读能力清单
 
@@ -39,6 +40,7 @@
 | `productId` | 93=星空旗舰版(默认) 87=苍穹 1=星空企业版/标准版;**`0`=不过滤(实现为省略参数——铁律:给上游传 `productIds[0]=0` 会当真值过滤,实测把 Knowledge 挤出前排)** |
 | `pageSize` | ≤50;`page` 分页 |
 | `global` | true=跨全部产品 |
+| `sortsType` | 排序模式。**`0/1`=相关性排序,`2/3`=时间倒序(新→旧)**。相关性排序下老文档可居首;时间倒序对「老文档被编辑」与「长尾低流量文档」是**结构性盲区**(实测同一查询 `0/1` 排第 1、`2/3` 进不了前 50),故服务默认 `1`,原句路固定 `1`(ADR-0009) |
 | `type` | 可选过滤 `knowledge|answer|article`;过滤时自动跨上游页扫描凑满(`scanNote` 报告扫了几页) |
 
 响应——三种实体全返回,`type` 字段区分:

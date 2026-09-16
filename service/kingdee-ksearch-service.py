@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""金蝶知识检索服务 v6.1 —— 匿名检索 + /ask 多路关键词编排(ADR-0005 彻底在线)+ 落地缓存写穿
+"""金蝶知识检索服务 v6.2 —— 匿名检索 + /ask 多路关键词编排(ADR-0005 彻底在线)+ 落地缓存写穿
 逆向自金蝶云社区官方后端(2026-09-05,详见交接文档 11/12/13/14/16),零账号/零点数/零凭据/零外部依赖。
 匿名接口铁证(均实测 HTTP 200,无 cookie):
   检索    GET https://vip.kingdee.com/api/search?text=&page=&pageSize=&global=&sortsType=&productIds[0]=
@@ -19,9 +19,9 @@
   不阻塞回答;updatedAt 幂等(没变不重写,变了覆盖);discovered_by=query;rg 做字段名/报错原文精查。
   md+front-matter 落盘/幂等唯一实现在 docstore.py(发版说明库 #15 复用同一套)。
   图游走(recommendArray)v5.1 剔除:匿名不可达(ADR-0004 增补)。
-★ v6.1 多路编排(issue #12,/ask 服务端硬行为,不再是 agent 软约束):一句自然语言问题自动拆解为
-  ≤6 路关键词(症状词路+字段/实体名词路+产品词路,拆解规则在 query_routes.json 语料可配置)分别检索,
-  RRF 融合 → topK 深读写穿落地缓存;预算硬上限单次 ask ≤16 上游请求(超限即停,budget_exhausted 可见);
+★ v6.2 原句路 + 多路编排(ADR-0009,/ask 服务端硬行为):一句自然语言问题自动拆解为
+  原句路+≤7 路关键词(原句路/症状词路/字段、实体名词路/产品词路,拆解规则在 query_routes.json 语料可配置)分别检索,
+  RRF 融合 → topK 深读写穿落地缓存;预算硬上限单次 ask ≤32 上游请求(超限即停,budget_exhausted 可见);
   限速两档(CONTEXT v6):交互短突发 2-3 请求/秒+抖动(/ask 默认档)/后台摄取 1 请求/秒,只卡真实上游请求,
   本地缓存命中不计。资料包展示排序:answer 优先(症状对齐),knowledge 紧随(根因)。
 ★ v4.0 管线 = 查询侧×排序侧×存储侧;评测结论:信号重排默认关(recall@10 -11%),同义词已移除。
@@ -46,9 +46,9 @@
   /answer    {"id":"<answerId>"}             → 单条回答全文
   /article   {"id":"<articleId>"}            → 社区文章全文
   /ask       {"text"} 或 {"keywords":[..]} + {"productId"?,"topK"=4,"budget"?,"rate"?,"pipeline"?}
-             → 一站式问答包:内置多路关键词拆解(症状词路+字段/实体名词路+产品词路 ≤6 路,规则在
+             → 一站式问答包:原句路+多路关键词拆解(≤7 路,规则在
                service/query_routes.json)→ RRF 融合 → 深读 topK 全文(写穿落地缓存)→附 top 相关 chunk;
-               预算硬上限 ≤16 上游请求(超限即停,budget_exhausted);展示排序 answer 优先/knowledge 紧随,
+               预算硬上限 ≤32 上游请求(超限即停,budget_exhausted);展示排序 answer 优先/knowledge 紧随,
                调用方 AI 拿包即合成带引用回答(官方问答效果的无登录等价)
   /share     {"link"} → 官方 AI 分享对话全文(评测集素材)
   /health
@@ -81,7 +81,7 @@ INDEX_DEFAULT = os.environ.get("KSEARCH_INDEX", "0").lower() in ("1", "true", "o
 SEARCH_TTL = 7 * 86400  # 搜索缓存 7 天;明细缓存永久(知识文档基本不可变,refresh=1 强制回源)
 RRF_K = 60
 
-# ---------- v6.1 多路编排配置(数据文件:拆解规则/预算/限速档,issue #12) ----------
+# ---------- 多路编排配置(数据文件:拆解规则/预算/限速档) ----------
 _ROUTE_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query_routes.json")
 _ROUTE_CFG = None
 
@@ -101,13 +101,33 @@ def _cfg_budget_max():
     v = os.environ.get("KSEARCH_ASK_BUDGET")
     if v and str(v).isdigit():
         return int(v)
-    return int((route_cfg().get("budget") or {}).get("maxUpstreamPerAsk") or 16)
+    cfg = route_cfg()
+    b = (cfg.get("budget") or {}).get("maxUpstreamPerAsk")
+    if b:
+        return int(b)
+    # 兜底:路数 + topK 深读 + 回答展开余量(实测 answer 详情翻页可吃 3-5 次/源)
+    # 仅在 query_routes.json 缺 budget.maxUpstreamPerAsk 时生效,故不追求与配置值相等——
+    # 配置是真源,本公式只是"配置读不到时的最小可用粗估"(7+12=19,有意保守)。
+    routes = int(cfg.get("maxRoutes") or 7)
+    topk = int((cfg.get("deepRead") or {}).get("topK") or 4)
+    return routes + topk * 3
+
+# 上游对 text 参数的硬上限:100 原始字符(含标点/空格/换行,均计 1)。
+# 超限返回 HTTP 200 + {"errorCode":409,"message":"搜索内容的长度不能超过100个字符"},
+# body 无 totalElements —— 不识别就会把"查询超限"静默降级成"无匹配结果"(2026-09-16 实测)。
+UPSTREAM_TEXT_MAX = 100
+
+def clamp_query(text, limit):
+    """把检索词压到上限内(默认传 UPSTREAM_TEXT_MAX)。超限时按上限硬截(上游是硬闸,不是软截断)。"""
+    t = str(text or "")
+    n = int(limit or UPSTREAM_TEXT_MAX)
+    return t[:n]
 
 class BudgetExhausted(Exception):
     """预算耗尽信号:停止发起上游请求,返回已获资料。"""
 
 class Budget:
-    """单次 ask 的上游请求硬上限(默认 16,可配置)。只对真实上游调用计数——
+    """单次 ask 的上游请求硬上限(默认 32,可配置)。只对真实上游调用计数——
     require/spend 都在 _get_json 入口,本地缓存命中不经 _get_json,天然不计。"""
     def __init__(self, max_upstream):
         self.max = int(max_upstream or 0) or None
@@ -204,6 +224,13 @@ def _up_now():
     with _UP_LOCK:
         return _UP_N
 
+class UpstreamError(Exception):
+    """上游业务错误(HTTP 200 但 body 带 errorCode)。"""
+    def __init__(self, code, message):
+        self.code = code
+        self.message = message
+        super().__init__("upstream %s: %s" % (code, message))
+
 def _get_json(url, budget=None):
     if budget is not None:
         budget.require()  # 预算硬上限:超限不再发起请求(issue #12)
@@ -213,7 +240,12 @@ def _get_json(url, budget=None):
         budget.spend()
     req = urllib.request.Request(url, headers=HDRS)
     with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+        d = json.loads(r.read().decode("utf-8", "replace"))
+    # 上游"假 200":HTTP 200 但 body 是错误壳(如 text 超 100 字符的 errorCode:409)。
+    # 不识别会把"查询超限"静默降级成"无匹配结果"——调用方据此会误判官方没这类文档。
+    if isinstance(d, dict) and d.get("errorCode"):
+        raise UpstreamError(int(d["errorCode"]), str(d.get("message") or "")[:200])
+    return d
 
 def _is_true(v):
     return str(v or "").lower() == "true"
@@ -501,6 +533,7 @@ def _norm_item(x, et):
     return None
 
 def _search_upstream_cached(text, product_id, page, page_size, global_, sorts_type, type_, cache_on, budget=None):
+    text = clamp_query(text, UPSTREAM_TEXT_MAX)  # 上游 100 字硬闸:超限返回 errorCode:409 空壳,先在入口压回上限内
     def fetch(pg):
         params = {"text": text, "page": pg, "pageSize": page_size,
                   "global": "true" if global_ else "false", "sortsType": sorts_type}
@@ -769,16 +802,24 @@ def _salient_chunks(text, stopwords):
     return out
 
 def plan_routes(text=None, keywords=None, product_id=None):
-    """一句自然语言问题 → ≤maxRoutes 路关键词(症状词路+字段/实体名词路+产品词路)。
+    """一句自然语言问题 → ≤maxRoutes 路关键词(症状词路+字段/实体名词路+产品词路+原句路)。
     拆解规则全部在 query_routes.json(语料可配置,沉淀词表只改数据文件,issue #12):
       1) 产品词:productAliases 命中问句且调用方未指定 productId 时推导,随后所有路统一携带
          productIds 过滤(实测无产品过滤时字段名路被全产品噪声淹没,金标文档挤出 25 条外);
       2) 症状词路:问句停用词剥离后的 CJK 片段+拉丁/数字 token,按 symptomCategories 归类成路;
       3) 字段/实体名词路:entityRules 按 whenAny/whenRegex 触发,产出领域术语变体(跨词汇鸿沟的桥);
-      4) 产品/上下文词路:剩余未归类 token(产品名/BOM 等上下文词)成一路,携带 productIds。
-    返回 (routes, product_id),route={kind,terms,why,productIds?}。"""
+      4) 产品/上下文词路:剩余未归类 token(产品名/BOM 等上下文词)成一路,携带 productIds;
+      5) 原句路(ADR-0009):完整问句作为独立一路,sortsType=1(相关性排序)。
+         它不是兜底——实测同一文档在原句+sortsType=1 下排第 1,而片段路由 RRF 融合后掉到第 23,
+         系统取 top4 时金牌出局。原句与片段信息独立,故恒常参与融合且保席位。
+         kind 取 "raw:question"(区别于兜底路 "raw":后者仅在什么都拆不出时触发且带 60 字截断语义)。
+    返回 (routes, product_id),route={kind,terms,why,productIds?,sortsType?}。"""
     cfg = route_cfg()
-    max_routes = int(cfg.get("maxRoutes") or 6)
+    max_routes = int(cfg.get("maxRoutes") or 7)
+    raw_cfg = cfg.get("rawRoute") or {}
+    raw_on = raw_cfg.get("enabled", True)
+    raw_sorts = int(raw_cfg.get("sortsType", 1))
+    raw_max = int(raw_cfg.get("maxChars") or UPSTREAM_TEXT_MAX)
     if keywords:  # 调用方显式关键词:每词一路(保持 v5 兼容语义)
         routes, seen = [], set()
         for k in keywords:
@@ -807,10 +848,16 @@ def plan_routes(text=None, keywords=None, product_id=None):
     cjk = _salient_chunks(text, cfg.get("stopwords"))
     routes, used = [], set()
 
+    # 0) 原句路(ADR-0009):先占席位,固定 sortsType=1,不受截断挤压
+    raw_route = None
+    if raw_on and text.strip():
+        raw_route = {"kind": "raw:question", "terms": clamp_query(text.strip(), raw_max),
+                     "why": "原句路(相关性排序;片段路的词汇鸿沟无法覆盖时由此救回)",
+                     "sortsType": raw_sorts}
+
     def take(term):
         used.add(term)
         return term
-
     # 1) 症状词路:按类别归拢(命中模式词/包含模式词的原文片段)
     numeric = [t for t in latin if re.fullmatch(r"\d+", t)]
     for i, cat in enumerate(cfg.get("symptomCategories", {}).get("categories", [])
@@ -853,18 +900,26 @@ def plan_routes(text=None, keywords=None, product_id=None):
     if leftover_lat or leftover_cjk:
         routes.append({"kind": "product", "terms": " ".join((leftover_lat + leftover_cjk)[:3]),
                        "why": "产品/上下文词路(携带 productIds 过滤)"})
-    # 兜底:什么都没拆出来 → 原句一路
-    if not routes and text.strip():
-        routes.append({"kind": "raw", "terms": text.strip()[:60], "why": "拆解无命中,原句检索"})
+    # 兜底:拆解一路未出(原句路关闭或文本为空)→ 原句一路
+    if not routes and not raw_route and text.strip():
+        routes.append({"kind": "raw", "terms": clamp_query(text.strip(), raw_max),
+                       "why": "拆解无命中,原句检索"})
+    # 原句路并入候选列表(在最前),统一走下面的保席位截断
+    if raw_route:
+        routes.insert(0, raw_route)
     # 产品过滤:所有路统一携带(问句/调用方给出的产品上下文)
     if product_id and int(product_id) != 0:
         for r in routes:
             r["productIds"] = int(product_id)
-    # ≤6 路硬上限;产品词路保席位(截断其他路)
-    if product_id and int(product_id) != 0 and len(routes) > max_routes:
-        prod = [r for r in routes if r["kind"] == "product"]
-        rest = [r for r in routes if r["kind"] != "product"][:max_routes - len(prod)]
-        routes = rest + prod
+    # 上限截断:产品词路与原句路保席位(ADR-0009——两者携带的信息维度不可被片段路挤掉)
+    if len(routes) > max_routes:
+        pinned_kinds = ("product", "raw:question", "raw")
+        pinned = [r for r in routes if r["kind"] in pinned_kinds]
+        rest = [r for r in routes if r["kind"] not in pinned_kinds]
+        routes = rest[:max(0, max_routes - len(pinned))] + pinned
+        # 保席位后按原句→片段→产品的稳定顺序回排(原句路恒在首位)
+        routes.sort(key=lambda r: (0 if r["kind"] == "raw:question" else
+                                   2 if r["kind"] == "product" else 1))
     return routes[:max_routes], product_id
 
 def _fused_key(x):
@@ -911,10 +966,19 @@ def ask_bundle(text=None, keywords=None, product_id=None, top_k=4,
             break
         try:
             res = knowledge_search(r["terms"], product_id=r.get("productIds"), page=1,
-                                   page_size=page_size, rerank=rerank, cache_on=cache_on, budget=budget)
+                                   page_size=page_size, rerank=rerank, cache_on=cache_on, budget=budget,
+                                   sorts_type=int(r.get("sortsType") or 1))
         except BudgetExhausted:
             break
-        except Exception:
+        except UpstreamError as e:
+            # 上游业务错误(HTTP 200 但 body 带 errorCode,如 text 超 100 字符的 409)。
+            # 不能与"该路无结果"混为一谈——显式记日志,否则静默吞掉会把"查询被上游拒绝"
+            # 伪装成"官方没这类文档",调用方据此得出错误结论。
+            log("UPSTREAM_ERR:", "route=%s code=%s msg=%s" % (r.get("kind"), e.code, e.message))
+            continue
+        except Exception as e:
+            log("ROUTE_ERR:", "route=%s terms=%s %s: %s"
+                % (r.get("kind"), str(r.get("terms"))[:40], type(e).__name__, str(e)[:120]))
             continue
         total = max(total, res.get("total") or 0)
         lists.append(res["results"])
@@ -978,7 +1042,7 @@ def ask_bundle(text=None, keywords=None, product_id=None, top_k=4,
     return {"ok": True, "text": text or " / ".join(r["terms"] for r in routes) or None,
             "total": total,
             "effectiveProductId": product_id,  # 票 #18:回显本次 ask 实际生效的产品过滤(plan_routes 返回)
-            "routes": routes,  # v6.1:多路拆解明细(kind/terms/why/productIds)
+            "routes": routes,  # 多路拆解明细(kind/terms/why/productIds/sortsType)
             "queries": [r["terms"] for r in routes],  # 兼容 v5 字段
             "sources": sources,
             "budget": {"max": budget.max if budget else None, "used": budget.used if budget else None,
@@ -987,7 +1051,7 @@ def ask_bundle(text=None, keywords=None, product_id=None, top_k=4,
             # 票 #21:语义重排可见性(enabled/reason/reordered/candidates/scores/elapsedMs;失败降级时 reason 说明)
             "semanticRerank": semantic_rerank_info,
             "_cacheHits": sum(1 for s in sources if s.get("fromCache")),
-                    "note": "v6.1 多路关键词编排:routes[] 为拆解明细(规则在 service/query_routes.json,语料可配置);"
+                    "note": "v6.2 原句路+多路关键词编排:routes[] 为拆解明细(规则在 service/query_routes.json,语料可配置);"
                     "sources 展示排序 answer 优先(症状对齐)、knowledge 紧随(根因);sources[].detail 已含全文并写穿"
                     "落地缓存;knowledge/article 附 chunks(标题感知切片,top3 相关段);调用方 AI 据此合成带引用回答,"
                     "可引用 [chunk#seq];budget=上游请求硬上限,超限即停并标 budget_exhausted;"
@@ -1046,8 +1110,8 @@ def share_read(link_or_id):
 # ---------- /manifest 机器可读能力清单 ----------
 def _manifest():
     return {
-        "service": "kingdee-ksearch", "version": "6.1", "anonymous": True,
-        "description": "金蝶官方知识库匿名检索/全文/问答包(逆向官方社区后端,零账号零点数);v6.1:/ask 内置多路关键词编排(症状词路+字段/实体名词路+产品词路 ≤6 路 RRF 融合,规则在 service/query_routes.json)+上游预算硬上限(默认 16,超限即停)+两档限速(交互短突发 2-3 req/s+抖动/后台 1 req/s);v6 彻底在线(ADR-0005):查询时检索+落地缓存写穿",
+        "service": "kingdee-ksearch", "version": "6.2", "anonymous": True,
+        "description": "金蝶官方知识库匿名检索/全文/资料包(逆向官方社区后端,零账号零点数,零模型依赖);v6.2:/ask 内置原句路+多路关键词编排(≤7 路 RRF 融合,规则在 service/query_routes.json)+上游预算硬上限+两档限速(交互短突发 2-3 req/s+抖动/后台 1 req/s);上游 text 有 100 字符硬上限(超限 errorCode:409,已自动压回并显式报错);v6 彻底在线(ADR-0005):查询时检索+落地缓存写穿",
         "corpus": {"dir": CORPUS_DIR, "write": "read/ask 深读同步写穿全文;POST /corpus 摄入 stub;share 引用自动落盘;"
                    "v6 起 corpus 检索面废除(ADR-0005),本地检索面在 landing+releasenotes(rg 精查),usage/ 子目录承载会话收尾金标沉淀",
                    "discovered_by": ["usage", "share"]},
@@ -1067,10 +1131,10 @@ def _manifest():
                                "data/eval/evalset.json 评测集", "scripts/run_eval.py A/B评测",
                                "scripts/releasenotes_ingest.py 发版说明摄取(唯一预囤发现腿,手动触发)"]},
         "cli": {"path": os.path.join(_ROOT, "bin", "kd.cmd" if os.name == "nt" else "kd"),
-                "commands": ["kd ask \"<问题>\" [--topk 4]  # 唯一常规入口:内置多路关键词拆解(≤6路 RRF)+深读写穿落地缓存+上游预算;--kw 显式关键词跳过拆解",
+                "commands": ["kd ask \"<问题>\" [--topk 4]  # 唯一常规入口:原句路+多路关键词拆解(≤7路 RRF)+深读写穿落地缓存+上游预算+synthesisBrief 召回信号;--kw 显式关键词跳过拆解",
                              "kd search \"<关键词>\" [--product 93] [--type knowledge|answer|article] [--size 10]  # 手动细粒度调试命令",
                              "kd read <id> [--kind knowledge|answer|article]  # 手动细粒度调试命令;kind 照抄 search 结果的 type",
-                             "kd ai \"<问题>\" [--topk 4]  # 需模型通道 KAI_BASE/KAI_MODEL,不可用自动降级资料包",
+                             "kd read <chunkId> --chunk  # 按官方 AI 引用 chunkId 匿名还原块全文(ADR-0007)",
                              "kd share <分享短链|chatId>", "kd manifest", "kd health"]},
         "endpoints": {
             "GET|POST /search": {"params": {"text": "string,必填,关键词", "productId": "int,93=星空旗舰版/87=苍穹/1=企业版标准版/0=不过滤",
@@ -1082,10 +1146,10 @@ def _manifest():
             "GET|POST /question": {"params": {"id": "answer 条目的 questionId"}, "returns": "问题正文+全部回答(采纳优先,前5条拉详情)+追问链 discussion"},
             "GET|POST /answer": {"params": {"id": "answer 条目的 id"}, "returns": "单条回答全文"},
             "GET|POST /article": {"params": {"id": "article 条目的 id"}, "returns": "社区文章全文"},
-            "GET|POST /ask": {"params": {"text": "自然语言问题(与 keywords 二选一);内置多路关键词拆解(症状词路+字段/实体名词路+产品词路,≤6 路 RRF 融合,规则在 service/query_routes.json)",
+            "GET|POST /ask": {"params": {"text": "自然语言问题(与 keywords 二选一);原句路+多路关键词拆解(≤7 路 RRF 融合,规则在 service/query_routes.json);注意上游 text 上限 100 字符,原句路自动截断",
                                          "keywords": "显式关键词数组(跳过自动拆解,每词一路,上限6路)",
                                          "productId": "int,93=星空旗舰版/87=苍穹/1=企业版标准版/0=不过滤(未指定时问句产品词自动推导,所有路统一携带)",
-                                         "topK": "深读条数 1-8,默认4", "budget": "上游请求硬上限覆盖(默认 16,超限即停)",
+                                         "topK": "深读条数 1-8,默认4", "budget": "上游请求硬上限覆盖(默认 32,超限即停)",
                                          "rate": "限速档 interactive(默认,短突发+抖动)|background(1 req/s)",
                                          "pipeline": "可选覆盖"},
                               "returns": "routes[] 拆解明细 + sources[] 深读全文资料包(展示排序 answer 优先/knowledge 紧随,"
@@ -1185,7 +1249,7 @@ class H(BaseHTTPRequestHandler):
         # 限速档:/ask 默认交互档(短突发+抖动);请求参数 rate=background 可切后台档(摄取类调用)
         rate_param = body.get("rate") or (qs.get("rate") or [None])[0]
         rate_used = rate_profile(str(rate_param) if rate_param else None)
-        # 预算硬上限:请求参数 budget > 环境变量 KSEARCH_ASK_BUDGET > query_routes.json(默认 16)
+        # 预算硬上限:请求参数 budget > 环境变量 KSEARCH_ASK_BUDGET > query_routes.json(默认 32)
         bv = body.get("budget") or (qs.get("budget") or [None])[0]
         max_up = int(bv) if bv and str(bv).isdigit() else _cfg_budget_max()
         budget = Budget(max_up)
@@ -1224,15 +1288,15 @@ class H(BaseHTTPRequestHandler):
         if u.path in ("/", "/manifest"):
             return self._reply(200, _manifest())
         if u.path == "/health":
-            return self._reply(200, {"service": "kingdee-ksearch v6.1", "anonymous": True,
+            return self._reply(200, {"service": "kingdee-ksearch v6.2", "anonymous": True,
                                      "pipeline": {"rerank": RERANK_DEFAULT, "cache": INDEX_DEFAULT},
                                      "ask": {"multiRoute": True, "routesCfg": _ROUTE_CFG_PATH,
                                              "budgetMax": _cfg_budget_max(), "rateProfile": rate_profile()},
                                      "rerankSemantic": semantic_rerank.status(),  # 票 #21:开关+模型加载状态
                                      "db": db_stats(), "corpus": corpus_stats(), "landing": landing_stats(),
                                      "endpoints": ["/manifest", "/search", "/karticle", "/question", "/answer", "/article", "/ask", "/share", "/corpus", "/health"],
-                                     "note": "v6.1(issue #12):/ask 内置多路关键词编排(≤6 路 RRF,规则 service/query_routes.json)+"
-                                             "上游预算硬上限(默认 16,超限即停 budget_exhausted)+两档限速(交互短突发+抖动/后台 1req/s,只卡真实上游);"
+                                     "note": "v6.2:/ask 内置原句路+多路关键词编排(≤7 路 RRF,规则 service/query_routes.json)+"
+                                             "上游预算硬上限(默认 32,超限即停 budget_exhausted)+两档限速(交互短突发+抖动/后台 1req/s,只卡真实上游);"
                                              "v6 落地缓存 landing:深读写穿独立落盘(常开,updatedAt 幂等,discovered_by=query,rg 精查);"
                                              "sqlite 缩编为纯上游缓存;官方 ai-search 管线需登录,不用"})
         if u.path == "/corpus":
@@ -1282,6 +1346,6 @@ class H(BaseHTTPRequestHandler):
         pass
 
 if __name__ == "__main__":
-    log(f"kingdee-ksearch v6.1 listening on {PORT} (rerank={RERANK_DEFAULT} cache={INDEX_DEFAULT} corpus={CORPUS_DIR} landing={LANDING_DIR} budget={_cfg_budget_max()} rate={rate_profile()})")
-    print(f"kingdee-ksearch v6.1 on :{PORT} (multi-route ask budget={_cfg_budget_max()} rate={rate_profile()} rerank={RERANK_DEFAULT} cache={INDEX_DEFAULT} landing={LANDING_DIR})")
+    log(f"kingdee-ksearch v6.2 listening on {PORT} (rerank={RERANK_DEFAULT} cache={INDEX_DEFAULT} corpus={CORPUS_DIR} landing={LANDING_DIR} budget={_cfg_budget_max()} rate={rate_profile()})")
+    print(f"kingdee-ksearch v6.2 on :{PORT} (multi-route ask budget={_cfg_budget_max()} rate={rate_profile()} rerank={RERANK_DEFAULT} cache={INDEX_DEFAULT} landing={LANDING_DIR})")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

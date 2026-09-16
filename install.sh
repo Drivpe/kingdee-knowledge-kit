@@ -24,6 +24,10 @@ echo "[install] 安装到 $ROOT"
 mkdir -p "$ROOT/service" "$ROOT/bin" "$ROOT/logs"
 cp "$REPO/service/kingdee-ksearch-service.py" "$ROOT/service/"
 cp "$REPO/service/docstore.py" "$ROOT/service/"
+cp "$REPO/service/semantic_rerank.py" "$ROOT/service/"
+# 多路检索规则文件(ADR-0005/0009):缺它则原句路/症状词路/实体规则/产品别名全部失效,
+# 服务会静默退回内置默认值——装出来的行为与开发中的不是同一个东西。
+cp "$REPO/service/query_routes.json" "$ROOT/service/"
 cp "$REPO/cli/kd.py" "$ROOT/bin/"
 cp "$REPO/cli/kd" "$ROOT/bin/"
 chmod +x "$ROOT/bin/kd"
@@ -56,16 +60,30 @@ if [ "$NO_START" -eq 0 ]; then
   bash "$REPO/scripts/start-service.sh" "$PORT" "$ROOT"
   echo "[install] 回归验证"
   KD_PY="$ROOT/bin/kd.py" KSEARCH_URL="http://127.0.0.1:$PORT" python3 "$REPO/tests/verify_ksearch.py"
+else
+  # 装机自检(--no-start 时也必须做):历史上安装器漏拷过 semantic_rerank.py 与
+  # query_routes.json——服务要么起不来,要么静默退回默认值装出"残废版"却毫无报错。
+  # 这里只验「文件齐 + 服务能起 + /health 报的配置是真配置」,不跑完整回归(那要消耗真实上游请求)。
+  echo "[install] 装机自检"
+  MISSING=0
+  for f in service/kingdee-ksearch-service.py service/docstore.py service/semantic_rerank.py \
+           service/query_routes.json bin/kd.py bin/kd; do
+    [ -f "$ROOT/$f" ] || { echo "[install] ✗ 缺文件: $ROOT/$f" >&2; MISSING=1; }
+  done
+  [ "$MISSING" -eq 0 ] || { echo "[install] 装机自检失败:必要文件缺失" >&2; exit 1; }
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json,sys;d=json.load(open('$ROOT/service/query_routes.json',encoding='utf-8'));sys.exit(0 if d.get('budget') else 1)" \
+      || { echo "[install] ✗ query_routes.json 不含 budget 配置" >&2; exit 1; }
+  fi
+  echo "[install] ✓ 文件齐备(含 query_routes.json 规则文件)"
 fi
 
 echo ""
 echo "完成!试一试:"
 echo "  kd search \"信用额度控制\" --product 93"
 echo "  kd read <id> --kind answer               # 读全文,kind 照抄 search 结果的 type"
-echo "  kd ask \"信用额度怎么控制\" --topk 4      # 资料包,交给你的 AI 合成"
-echo "  kd ai \"信用额度怎么控制\"                # 一步合成带引用回答(需模型通道,自动降级)"
+echo "  kd ask \"信用额度怎么控制\" --topk 4      # 资料包(带 synthesisBrief 召回信号),交给调用方 agent 合成"
 echo "  kd manifest                              # 全部能力清单"
 echo ""
-echo "kd ai 模型通道(可选,任意 OpenAI 兼容端点):"
-echo "  export KAI_BASE=http://127.0.0.1:4090    # 默认值,勿带 /v1"
-echo "  export KAI_MODEL=glm-5.3-flash           # 默认值"
+echo "本套件不合成回答(ADR-0008,零模型依赖):拿到 kd ask 资料包后,由 agent 按"
+echo "docs/ANSWER-SPEC.md 合成;子代理提示词模板见技能 SKILL.md。"

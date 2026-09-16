@@ -438,7 +438,7 @@ def main():
                   (hard["vocabGapSurvival"] or 0, hard["vocabGapAlive"], hard["vocabGapN"]),
                   "- **根因可解释率**: %.3f(%d/%d 例)——sources 引用落到 knowledge 类型且 chunk 文本命中 gold 根因关键词(自 gold 文档【概述】段提取,固化在评测用例内);" %
                   (hard["rootCauseExplain"] or 0, hard["rootCauseExplained"], hard["rootCauseN"]),
-                  "- 判定为资料包级(sources 引用素材);最终回答级引用判定待 kd ai 管线评测,不影响 search 层金标口径。", ""]
+                  "- 判定为资料包级(sources 引用素材);最终回答级引用判定不在本评测范围——合成权已移交调用方(ADR-0008),回答级口径须在调用方合成环节另立,不影响 search 层金标口径。", ""]
         lines += ["| 用例 | gold命中(sources) | 存活 | 根因可解释 | 根因关键词命中 | 上游请求 |",
                   "|---|---|---|---|---|---|"]
         for r in hard["rows"]:

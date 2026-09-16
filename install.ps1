@@ -1,4 +1,4 @@
-﻿# install.ps1 — kingdee-knowledge-kit 一键安装(Windows)
+# install.ps1 — kingdee-knowledge-kit 一键安装(Windows)
 # 用法: powershell -ExecutionPolicy Bypass -File install.ps1
 #   开关: -InstallRoot <dir>  -NoPath  -NoSkills  -NoStart  -DryRun  -Port 4097
 # 效果: 服务+kd CLI 装到 ~\.kingdee-kit,bin 加入用户 PATH,技能装到 ~\.agents\skills,
@@ -30,8 +30,15 @@ if (-not $DryRun) {
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallRoot "service"), $Bin, (Join-Path $InstallRoot "logs") | Out-Null
     Copy-Item (Join-Path $Repo "service\kingdee-ksearch-service.py") (Join-Path $InstallRoot "service\") -Force
     Copy-Item (Join-Path $Repo "service\docstore.py") (Join-Path $InstallRoot "service\") -Force
+    Copy-Item (Join-Path $Repo "service\semantic_rerank.py") (Join-Path $InstallRoot "service\") -Force
+    # 多路检索规则文件(ADR-0005/0009):缺它则原句路/症状词路/实体规则/产品别名全部失效,
+    # 服务会静默退回内置默认值——装出来的行为与开发中的不是同一个东西。
+    Copy-Item (Join-Path $Repo "service\query_routes.json") (Join-Path $InstallRoot "service\") -Force
     Copy-Item (Join-Path $Repo "cli\kd.py") $Bin -Force
     Copy-Item (Join-Path $Repo "cli\kd.cmd") $Bin -Force
+    # 同时装无扩展名的 bash shim:Windows 上的 Git Bash(MSYS2)不会把裸名 kd 解析到
+    # .cmd,只有 kd.cmd 的话 Git Bash 里敲 kd 找不到。
+    Copy-Item (Join-Path $Repo "cli\kd") $Bin -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $Repo "tests") | Out-Null
 }
 
@@ -75,9 +82,35 @@ if (-not $NoStart) {
     Step "跳过启动(-NoStart)"
 }
 
+# 5.5 装机自检(--NoStart 时也必须做)
+# 历史上安装器漏拷过 semantic_rerank.py 与 query_routes.json——服务要么起不来,
+# 要么静默退回默认值装出"残废版"却毫无报错。这里只验文件齐 + 配置可解析,不跑完整回归。
+if (-not $DryRun) {
+    Step "装机自检"
+    $need = @("service\kingdee-ksearch-service.py", "service\docstore.py", "service\semantic_rerank.py",
+              "service\query_routes.json", "bin\kd.py", "bin\kd.cmd")
+    $missing = @()
+    foreach ($f in $need) {
+        if (-not (Test-Path (Join-Path $InstallRoot $f))) { $missing += $f }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Host ("[install] 装机自检失败:缺文件 " + ($missing -join ", ")) -ForegroundColor Red
+        exit 1
+    }
+    $cfgPath = Join-Path $InstallRoot "service\query_routes.json"
+    try {
+        $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $cfg.budget) { throw "query_routes.json 不含 budget 配置" }
+    } catch {
+        Write-Host "[install] 装机自检失败:$($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+    Step "✓ 文件齐备(含 query_routes.json 规则文件)"
+}
+
 # 6. 回归验证
 if (-not $NoStart -and -not $DryRun) {
-    Step "回归验证(22 项内含 CLI 与 kd ai 降级)"
+    Step "回归验证(含 CLI、资料包与召回信号契约)"
     $env:KD_PY = Join-Path $Bin "kd.py"
     $env:KSEARCH_URL = "http://127.0.0.1:$Port"
     & $pyCmd (Join-Path $Repo "tests\verify_ksearch.py")
@@ -88,10 +121,8 @@ Write-Host ""
 Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd search ""信用额度控制"" --product 93"
 Write-Host "  kd read <id> --kind answer               # 读全文,kind 照抄 search 结果的 type"
-Write-Host "  kd ask ""信用额度怎么控制"" --topk 4      # 资料包,交给你的 AI 合成"
-Write-Host "  kd ai ""信用额度怎么控制""                # 一步合成带引用回答(需模型通道,自动降级)"
+Write-Host "  kd ask ""信用额度怎么控制"" --topk 4      # 资料包(带 synthesisBrief 召回信号),交给调用方 agent 合成"
 Write-Host "  kd manifest                              # 全部能力清单"
 Write-Host ""
-Write-Host "kd ai 模型通道(可选,任意 OpenAI 兼容端点):"
-Write-Host '  $env:KAI_BASE  = "http://127.0.0.1:4090"   # 默认值,勿带 /v1'
-Write-Host '  $env:KAI_MODEL = "glm-5.3-flash"            # 默认值'
+Write-Host "本套件不合成回答(ADR-0008,零模型依赖):拿到 kd ask 资料包后,由 agent 按"
+Write-Host "docs/ANSWER-SPEC.md 合成;子代理提示词模板见技能 SKILL.md。"

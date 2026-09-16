@@ -1,11 +1,17 @@
 {
-  "version": "v6.1",
-  "note": "/ask 多路关键词拆解配置(ADR-0005):症状词路+字段/实体名词路+产品词路,≤maxRoutes 路 RRF 融合。拆解规则是语料可配置的数据文件——沉淀词表/新增词汇鸿沟规则只改本文件,不改代码。entityRules 来自真实 usage 案例(先标金后测管线),每条注明来源。",
-  "maxRoutes": 6,
+  "version": "v6.2",
+  "note": "/ask 多路关键词拆解配置(ADR-0005):原句路+症状词路+字段/实体名词路+产品词路,≤maxRoutes 路 RRF 融合。拆解规则是语料可配置的数据文件——沉淀词表/新增词汇鸿沟规则只改本文件,不改代码。entityRules 来自真实 usage 案例(先标金后测管线),每条注明来源。",
+  "maxRoutes": 7,
   "searchPageSize": 25,
+  "rawRoute": {
+    "enabled": true,
+    "sortsType": 1,
+    "maxChars": 100,
+    "note": "原句路(ADR-0009):完整问句作为独立一路参与 RRF,固定 sortsType=1(相关性排序)。实测同一文档在原句+st=1 下排第 1,片段路由融合后掉到第 23,top4 深读时金牌出局;MMLF 表 3 亦证原查询须独立成路。它不是兜底路,保席位不被截断。sortsType 语义:0/1=相关性,2/3=时间倒序(对老文档/长尾文档是结构性盲区)。maxChars=100 是**上游硬闸**:text 超 100 原始字符(含标点/空格)上游返回 errorCode:409 空壳,长问句会静默变成零结果。"
+  },
   "budget": {
-    "maxUpstreamPerAsk": 16,
-    "note": "单次 ask 上游请求硬上限(≤6 路搜索+topK 深读+回答展开);超限即停止发起请求,返回已获资料并标注 budget_exhausted。可被环境变量 KSEARCH_ASK_BUDGET / 请求参数 budget 覆盖。"
+    "maxUpstreamPerAsk": 32,
+    "note": "单次 ask 上游请求硬上限;超限即停止发起请求,返回已获资料并标注 budget_exhausted。可被环境变量 KSEARCH_ASK_BUDGET / 请求参数 budget 覆盖。值依据(2026-09-16 实测):8 例候选在 budget=16 与 32 两档下逐例对照,消耗完全相同(9-15 次,均未触及任一上限),gold 存活与排位零差异——说明当前用例集尚未触到预算天花板,32 是留足余量的设置而非瓶颈修复。此前把它归因于『16/18 提前收尾造成召回不完整』缺乏对照支撑,已撤回该因果结论。缺省兜底公式 maxRoutes + topK*3 仅在缺本配置段时生效,有意保守,不追求与本值相等。"
   },
   "deepRead": { "topK": 4 },
   "rate": {
