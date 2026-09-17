@@ -1,0 +1,37 @@
+[project]
+name = "kingdee-knowledge-kit"
+version = "6.2.0"
+description = "kd — 金蝶官方知识库检索 CLI(匿名免费:零账号/零点数/零模型)。只产资料包,合成权在调用方 agent。"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Drivpe" }]
+keywords = ["kingdee", "k3cloud", "苍穹", "星空", "knowledge", "search", "cli", "agent"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Documentation",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Drivpe/kingdee-knowledge-kit"
+Repository = "https://github.com/Drivpe/kingdee-knowledge-kit"
+
+[project.scripts]
+kd = "kd.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# query_routes.json 是包内数据文件(多路拆解规则/预算/限速档),
+# 缺它则原句路/症状词路/实体规则/产品别名全部失效,内核会静默退回内置默认值
+# ——装出来的行为与开发中的不是同一个东西。必须随包分发。
+[tool.setuptools.package-data]
+kd = ["query_routes.json"]

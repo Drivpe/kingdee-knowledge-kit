@@ -17,8 +17,8 @@ _Avoid_: L1、后端、server(泛称)、kingdee-ksearch-service(已废除的形�
 检索结果的三个类型 `knowledge`(官方文档)/ `answer`(社区问答帖)/ `article`(社区文章),`type` 字段贯穿 search 与 read,一一对应。
 _Avoid_: 三级链路、知识类型
 
-**三层检索路由**:
-v6 的问题解决路径:answer+knowledge **并行**多路搜索;发版说明库第三跳兜底(前两层空手或无法解释根因时才触发)。展示排序 answer 优先(症状近似度最高),knowledge 补根因解释。
+**两级检索路由**:
+v6 的问题解决路径:answer+knowledge **并行**多路搜索(`kd ask` 一次带回);本地精查层随去服务化取消,原第三跳由**站外搜索**承担(ADR-0011)。展示排序 answer 优先(症状近似度最高),knowledge 补根因解释。
 _Avoid_: 串行三层、answer 万能论(本案例证明正确答案可以是 knowledge)
 
 **排序模式(sortsType)**:
@@ -48,8 +48,10 @@ _Avoid_: 语料库、索引语料(见下条,两者红线圈不同)
 _Avoid_: 语料(泛称,三义混用是历史事故)、corpus(v5 旧义:预爬语料,已废除)、训练集
 
 **发版说明库**:
-唯一预囤语料:`~/.lingeebuild/releasenotes/`,93 旗舰版近 1 年(先试),一版本一 md + front-matter(产品/版本/日期),正文保留官方「模块-问题-修复」结构。**「官方已修复」类问题的终审依据**,也是前两层解释不了根因时的第三跳。
-⚠️ **当前为空库(0 篇)**,而 SKILL.md 已将其写为终审依据——文档承诺了尚未建立的能力,已记为待办(ADR-0011「未决与待办」)。
+~~唯一预囤语料:`~/.lingeebuild/releasenotes/`,93 旗舰版近 1 年,一版本一 md + front-matter,正文保留官方「模块-问题-修复」结构。~~
+**已取消(2026-09-16,ADR-0011)**:该目录**从未建立**——`~/.lingeebuild/` 下只有遗留的 `landing/`,
+`releasenotes/` 子目录整个不存在(不是「空库」)。本地预囤体系整体取消后,「官方已修复」类问题
+改由 `kd ask` 召回 + 站外搜索官方发版说明承担,**引用时须以官方原文为准,不得凭印象断言修复版本**。
 _Avoid_: 更新日志(泛称)、changelog
 
 **回答规范(ANSWER-SPEC)**:
@@ -75,7 +77,9 @@ _Avoid_: 置信分数、score、确定性(指代不明)
 
 **模型通道**:
 ~~kd ai 合成回答用的 OpenAI 兼容端点(KAI_BASE/KAI_MODEL)。~~
-**已废除(2026-09-16,ADR-0008)**:`KAI_BASE`/`KAI_MODEL` 环境变量移除,`kd` 只剩 `KSEARCH_URL` 一项。
+**已废除(2026-09-16,ADR-0008)**:`KAI_BASE`/`KAI_MODEL` 环境变量移除。
+**后续补正(2026-09-17,ADR-0011)**:`KSEARCH_URL` 亦已废除——内核进程内直连,无 HTTP/无端口;
+`KSEARCH_INDEX` 同样失效(sqlite 上游缓存随去服务化删除)。`kd` 现无任何必需环境变量。
 _Avoid_: LLM 服务、AI 服务(泛称)
 
 **chunk 切片**:
@@ -83,17 +87,12 @@ _Avoid_: LLM 服务、AI 服务(泛称)
 **现状注记(2026-09-16)**:chunk 携带的 `seq` 是**本地切片序号**,不是官方 chunkId——`[n](chunk#m)` 的 m 无法经 `kd read <chunkId> --chunk` 还原。该引用粒度依赖官方 chunkId 映射(下条),当前暂缓。
 _Avoid_: 分段(泛称)、embedding(切片不向量化)
 
-**chunk 溯源**:
-引用的目标形态:`标题 + entityId + chunkId`,匿名经 `GET /aisapi/document-chunks/{chunkId}` 实时解析 chunk 全文(2026-09-06 匿名 body 级实测 200)。**永不发网页 URL**——vip.kingdee.com 网页路由(question/article/knowledge)匿名一律 302 登录墙,是引用 404 的根因。
-**现状与边界(2026-09-16)**:
-- 官方**无「按文档列出全部 chunk」端点**(`?documentId=` 实测 404),`document-chunks/{id}` 只做**反查**;
-- chunkId 的唯一来源是**登录态** SSE 终止帧的 `searchSources[].id`(其中 `entityId` 才是文档 ID)与官方分享对话正文;
-- chunkId 形态为自增短整型(如 2659901),**同文档内连续、跨文档不单调映射到 entityId**,故不可枚举、不可推导;
-- 结论:**该能力未落地,当前暂缓**。`kd read --chunk` 消费端已就绪,缺的是 `entityId → chunkId` 映射的产出端。
-_Avoid_: 引用链接(旧义:网页 URL)、link(泛称)
-
 **评测集**:
-`data/eval/evalset.json`,金标 = usage 层(真实使用产生的问题,gold=解题过程读全文核实的文档)。v6 起从零重建(旧金标随语料删除,首条种子见 ADR-0005「评测」节),两条硬指标:**词汇鸿沟存活率**(症状词↔字段名错位用例必过)、**根因可解释率**(回答须引到根因段落,只引 answer 不过)。彻底在线后评测消耗上游:用例池化+抽样跑;**先标金、后测管线**(防自证循环)。
+~~`data/eval/evalset.json`,金标 = usage 层(真实使用产生的问题,gold=解题过程读全文核实的文档)。~~
+**已废除(2026-09-16,ADR-0011)**:`data/eval/` 全目录与 `scripts/run_eval.py` 随去服务化删除,
+28 例双层金标不复存在。**验收改以两条手工硬指标为准**:**词汇鸿沟存活率**(症状词↔字段名错位用例必过)、
+**根因可解释率**(回答须引到根因段落,只引 answer 不过);回归由 `tests/kd_regression.py` 承担
+(回归≠评测:前者防退化,后者量质量)。
 _Avoid_: 测试集(verify 是回归,评测是质量)、官方对齐
 
 **词汇鸿沟**:
