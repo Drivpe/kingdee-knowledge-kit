@@ -188,8 +188,8 @@ def build_parser():
     s.add_argument("--kind", choices=list(_VALID_KINDS), default="knowledge",
                    help="实体类型,照抄 search 结果的 type 字段(默认 knowledge)")
     s.add_argument("--chunk", action="store_true",
-                   help="按官方 AI 引用 chunkId 匿名读块全文(ADR-0007;尚未并入内核,"
-                        "当前需用旧入口 python3 cli/kd.py read <id> --chunk)")
+                   help="按官方 AI 引用 chunkId 匿名读块全文(ADR-0007;该能力未落地,"
+                        "当前无可用入口——执行时报错而非静默忽略)")
     s.set_defaults(fn=cmd_read)
 
     s = sub.add_parser("ask", help="唯一常规入口:一站式资料包(内置多路关键词拆解 ≤7 路 RRF"

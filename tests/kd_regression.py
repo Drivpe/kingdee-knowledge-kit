@@ -11,9 +11,14 @@
   python3 tests/kd_regression.py --online --only-online   # 只跑联网组
 
 退出码语义:
-  0 = 全部通过(或仅有已记录缺陷且显式传了 --allow-known-defect)
-  1 = 有真实回归失败,或有未放行的已知 src 缺陷
-  「已知 src 缺陷」不会静默变成绿:默认同样返回 1,只在显式 --allow-known-defect 时放行。
+  0 = 全部通过
+  1 = 有失败
+
+历史上本套件区分过「已知 src 缺陷」与「真实回归失败」两类,并提供一个
+`--allow-known-defect` 开关放行前者。该机制已随其唯一服务对象被移除:它记载的
+`_Budget.require()`/`spend()` 两步非原子竞态已由工单 #29 修复(现为单个持锁的
+`acquire()`,见 src/kd/_core_impl.py `_Budget`)。机制比缺陷活得久,会让退出码语义
+继续宣告一个不存在的问题类别,故整体删除——每个失败都返回 1。
 
 联网组单独归组、默认不跑:上游是真实网络请求(匿名链路,间隔 ≥1s),离线可验的
 结构契约不应因为上游抖动而变红。
@@ -45,7 +50,7 @@ RUN = os.path.join(SRC, "kd_run.py")
 # `semanticRerank` 从"必须存在"降为"允许存在但不应出现"——它是**旧版残留字段**,
 # 不是等价性要求。同理 `stats.pipeline` 也只在旧 HTTP v4 路径存在过。
 ASK_KEYS = {"ok", "text", "total", "effectiveProductId", "routes", "queries", "sources",
-            "budget", "budget_exhausted", "_cacheHits", "note", "stats"}
+            "budget", "budget_exhausted", "note", "stats"}
 ASK_LEGACY_KEYS = {"semanticRerank"}   # 旧服务字段:新内核不产出,出现即异常
 ASK_NEW_KEYS = {"synthesisBrief"}
 BRIEF_KEYS = {"sourceCount", "topScores", "routeKinds", "routeCount", "budgetExhausted",
@@ -56,7 +61,7 @@ BRIEF_KEYS = {"sourceCount", "topScores", "routeKinds", "routeCount", "budgetExh
 ROUTE_KEYS = {"kind", "terms", "why"}
 ROUTE_OPT_KEYS = {"sortsType", "productIds"}
 # sources[] 11 字段
-SOURCE_KEYS = {"rank", "type", "id", "questionId", "title", "url", "snippet", "fromCache",
+SOURCE_KEYS = {"rank", "type", "id", "questionId", "title", "url", "snippet",
                "fusedScore", "products", "detail"}
 # sources[].detail 16 字段(旧版 17,已摘 landing)。detail 是各 kind 的并集:
 # 预算是"字段名必须落在白名单内 + 必含核心字段",因为 answer/knowledge 天然字段集不同。
@@ -70,7 +75,7 @@ CHUNK_KEYS = {"seq", "heading", "text"}
 # search 顶层 11 键;结果项 10 字段(并集:answer 条目额外带 questionId/questionBody/
 # adopted/answersCount/comments,knowledge 带 useful,article 带 supports)
 SEARCH_KEYS = {"ok", "text", "total", "queries", "page", "pageSize", "totalPages",
-               "results", "scanNote", "_cacheHits", "stats"}
+               "results", "scanNote", "stats"}
 RESULT_BASE_KEYS = {"type", "id", "url", "title", "snippet", "products", "views",
                     "useful", "contentLen", "updatedAt"}
 RESULT_ALLOWED_KEYS = (RESULT_BASE_KEYS - {"useful"}) | {
@@ -79,7 +84,8 @@ RESULT_ALLOWED_KEYS = (RESULT_BASE_KEYS - {"useful"}) | {
 # read:ok, id, type, title, contentText, url, products, updatedAt, stats(已摘 landing)
 READ_KEYS = {"ok", "id", "type", "title", "contentText", "url", "products", "updatedAt", "stats"}
 
-STATS_KEYS = {"upstreamCalls", "cacheHits", "elapsedMs", "pipeline"}
+# stats 只断"旧 HTTP 路径字段不得回归"(pipeline);upstreamCalls/elapsedMs/rateProfile
+# 由各用例就地断言。原 STATS_KEYS 常量定义了却从未被引用,属死常量,已删除。
 KS_STATS_LEGACY = {"pipeline"}  # 旧 HTTP v4 路径字段,新内核不产出
 BUDGET_KEYS = {"max", "used", "upstreamCalls"}
 
@@ -482,7 +488,7 @@ def t_ask_sources():
        "sources 展示排序不符(answer 优先、knowledge 紧随): %r" % (order,))
 
 
-@case("online: ask budget 硬上限(含并发越限 —— 已知缺陷,见 xfail 说明)", online=True)
+@case("online: ask budget 硬上限(并发深读下仍不越限)", online=True)
 def t_ask_budget():
     p = core.ask(QUERY, product_id=93, top_k=8, budget=4)
     b = p["budget"]
@@ -498,30 +504,33 @@ def t_ask_budget():
     ok(p0["budget"]["used"] == 0, "budget=0 却消耗了上游请求")
 
 
-@case("online: [已知缺陷] ask budget 硬上限在并发深读下被击穿", online=True)
-def t_ask_budget_concurrency_defect():
-    """真实缺陷记录(2026-09-17 实测,稳定复现,非偶发):
+@case("online: ask budget 硬上限在并发深读下不被击穿", online=True)
+def t_ask_budget_concurrency():
+    """期望行为:`ask(top_k=8, budget=N)` 的 budget.used 恒不超过 max。
 
-    现象:`ask(top_k=8, budget=N)` 的 budget.used 可以超过 max。
-    实测矩阵: max=1→used=1, max=2→used=2, max=3→used=6, max=4→used=6, max=6→used=9。
+    覆盖场景:深读路径经 `ThreadPoolExecutor(max_workers=4)` 并发进入上游取数,
+    多个线程同时竞争同一份预算名额。这里的断言是"并发下 max 仍是硬上限"。
 
-    根因(源码级):`_fetch_for_item` 经 `ThreadPoolExecutor(max_workers=4)` 并发进入
-    `_get_json`,而 `_Budget.require()`(检查 used>=max)与 `_Budget.spend()`(used+=1)
-    是两步非原子操作,且 `_Budget` 无锁。4 个线程可同时通过 require 检查、再各自 spend,
-    故实际请求数最多超出 max 约 (并发度-1) 次。
+    --- 历史注记(2026-09-17,工单 #29)---
+    本用例原名 `[已知缺陷] … 被击穿`,当时断言的是同一个期望行为,但实现不满足:
+    实测矩阵 max=1→used=1, max=2→used=2, max=3→used=6, max=4→used=6, max=6→used=9。
+    根因是 `_Budget.require()`(检查 used>=max)与 `_Budget.spend()`(used+=1)为两步
+    非原子操作且无锁,4 个线程可同时通过检查再各自自增,实际请求数溢出 (并发度-1) 次。
 
-    影响:`budget` 声称是"上游请求硬上限",越限即破坏"保持人类调用频率"的上游纪律。
-    本用例断言**期望行为**(used<=max);当前实现不满足 —— 用例会红,这是故意的:
-    它是缺陷的活证据,不是测试写错。修复点在 src/(并行 agent 负责),测试侧不掩盖。
-    修复后本用例自动转绿,无需改动。
+    修复手法:两者合并为单个持锁的 `acquire()`(检查+占用在同一临界区内完成,
+    见 src/kd/_core_impl.py `_Budget`),配合编排层经 `remaining()`/`snapshot()`
+    持锁读取,消除 check-then-act 竞态。修复后本用例转绿。
+
+    保留注记的理由:用例名与断言现在描述"应该怎样",历史缺陷记录在案但不进入
+    用例标识——否则已修复的问题会继续以用例名的形式对外宣告自己健在。
     """
     for maxv in (2, 3, 4):
         p = core.ask(QUERY, product_id=93, top_k=8, budget=maxv)
         used = p["budget"]["used"]
         ok(used <= maxv,
-           "[src 缺陷·非测试问题] budget 硬上限被击穿: max=%d 实际 used=%d(超出 %d 次上游请求);"
-           "根因=_Budget.require/spend 非原子且无锁,与 ThreadPoolExecutor(max_workers=4) 竞争。"
-           "修复点仅在 src/kd/core.py;修好后本用例自动转绿,测试侧无需改动。"
+           "budget 硬上限被击穿: max=%d 实际 used=%d(超出 %d 次上游请求);"
+           "深读路径经 ThreadPoolExecutor(max_workers=4) 并发取名额,"
+           "预算领取必须是原子的(见 _Budget.acquire)"
            % (maxv, used, used - maxv))
 
 
@@ -652,27 +661,15 @@ def main(argv):
             print("ok    %s  (%.1fs)" % (name, time.time() - t0))
 
     print("-" * 72)
-    known = [(n, m) for n, m in failed if "src 缺陷" in m]
-    real = [(n, m) for n, m in failed if "src 缺陷" not in m]
-    print("通过 %d / 失败 %d(其中已知 src 缺陷 %d,真实回归失败 %d)"
-          % (len(passed), len(failed), len(known), len(real)))
-    if known:
-        print("已知 src 缺陷(测试侧不掩盖,修 src 后自动转绿):")
-        for n, m in known:
-            print("  ! %s: %s" % (n, m))
-    if real:
-        print("真实回归失败:")
-        for n, m in real:
+    print("通过 %d / 失败 %d" % (len(passed), len(failed)))
+    if failed:
+        print("失败用例:")
+        for n, m in failed:
             print("  x %s: %s" % (n, m))
-    if known and not ("--allow-known-defect" in argv):
-        print("(已知缺陷仍存在;仅在明确接受该缺陷时用 --allow-known-defect 让退出码归零)")
-    # 默认:任何失败(含已知缺陷)都返回非零,避免 CI 把缺陷当全绿;
-    # --allow-known-defect 只放行"已记录的 src 缺陷",真实回归失败仍返回非零。
-    if real:
-        return 1
-    if known and "--allow-known-defect" not in argv:
-        return 1
-    return 0
+    # 任何失败都返回非零。曾有一个 --allow-known-defect 开关放行"已记录的 src 缺陷",
+    # 它服务的那条缺陷(工单 #29 的预算竞态)已修复,故开关与 known/real 分类一并删除
+    # ——保留会继续宣告一个不存在的问题类别,见本文件头部退出码说明。
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -59,9 +59,6 @@ RERANK_DEFAULT = os.environ.get("KSEARCH_RERANK", "0").lower() in ("1", "true", 
 # log() 保留为**空实现**而非删除:它是 core 内部通用观测点(约 10 处调用),
 # 删函数会把"日志"这个关注点炸进每个调用点;改为写 stderr 才是正确落点。
 
-_ONE_LINE = re.compile(r"\s+")
-
-
 def log(*a):
     """观测日志 → stderr(不落盘、不写 ~/.kd/)。
 
@@ -465,7 +462,6 @@ def _knowledge_search(text, product_id=None, page=1, page_size=10, global_=False
                     items.append(n)
 
         scan_note = None
-        hits = 0
         if type_:
             d = _search_upstream(text, product_id, page, page_size, global_, sorts_type, type_, budget, rate)
             total, total_pages = d.get("totalElements"), d.get("totalPages")
@@ -483,7 +479,7 @@ def _knowledge_search(text, product_id=None, page=1, page_size=10, global_=False
             collect(d)
         return {"ok": True, "text": text, "total": total, "queries": [text],
                 "page": page, "pageSize": page_size, "totalPages": total_pages,
-                "results": items, "scanNote": scan_note, "_cacheHits": hits}
+                "results": items, "scanNote": scan_note}
 
     # ---- v4 管线路径:深扫描 + RRF + 信号重排 ----
     queries = [text]
@@ -508,7 +504,7 @@ def _knowledge_search(text, product_id=None, page=1, page_size=10, global_=False
     items = [n for _, n in scored][(page - 1) * page_size: page * page_size]
     return {"ok": True, "text": text, "total": total,
             "page": page, "pageSize": page_size, "totalPages": total_pages,
-            "results": items, "_cacheHits": 0,
+            "results": items,
             "scanNote": "v4管线:上游深扫描%d条×%d路%s,RRF(k=%d)+信号重排" % (
                 up_size, len(queries), "+同义词变体" if len(queries) > 1 else "", RRF_K),
             "queries": queries}
@@ -870,7 +866,6 @@ def _ask_bundle(text=None, keywords=None, product_id=None, top_k=None,
                         "questionId": item.get("questionId"),
                         "title": item.get("title"), "url": item.get("url"),
                         "snippet": item.get("snippet"),
-                        "fromCache": d.get("fromCache") if d else None,
                         "fusedScore": round(scores[_fused_key(item)], 5),
                         "products": d.get("products") or item.get("products") or [],
                         "detail": d})
@@ -884,7 +879,6 @@ def _ask_bundle(text=None, keywords=None, product_id=None, top_k=None,
             "sources": sources,
             "budget": {"max": _max, "used": _used, "upstreamCalls": _used},
             "budget_exhausted": bool(_exhausted),
-            "_cacheHits": sum(1 for s in sources if s.get("fromCache")),
             "note": "v6.2 原句路+多路关键词编排(规则在 kd/query_routes.json,语料可配置);"
                     "sources 展示排序 answer 优先(症状对齐)、knowledge 紧随(根因);"
                     "sources[].detail 已含全文并写穿落地缓存;knowledge/article 附 chunks"
@@ -918,53 +912,6 @@ def _synthesis_brief(pack):
     }
 
 
-# ---------- 分享对话(匿名) ----------
-def _share_read(link_or_id, rate=None):
-    s = str(link_or_id).strip()
-    chat_id = None
-    m = re.search(r"/searchchats/(\d+)", s)
-    if m:
-        chat_id = m.group(1)
-    elif s.isdigit():
-        chat_id = s
-    elif "/link/s/" in s:
-        url = s if s.startswith("http") else VIP + s
-        for _ in range(5):  # 沿重定向找 /searchchats/{chatId}
-            class _NR(urllib.request.HTTPRedirectHandler):
-                def redirect_request(self, *a, **k):
-                    return None
-
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            try:
-                urllib.request.build_opener(_NR).open(req, timeout=20)
-                break  # 无重定向了
-            except urllib.error.HTTPError as e:
-                loc = e.headers.get("Location") or ""
-                if not loc:
-                    break
-                if loc.startswith("/"):
-                    loc = VIP + loc
-                m2 = re.search(r"/searchchats/(\d+)", loc)
-                if m2:
-                    chat_id = m2.group(1)
-                    break
-                url = loc
-            except Exception:
-                break
-    if not chat_id:
-        raise InternalError("cannot resolve chatId(传分享短链、/searchchats/{id} 页面链接或纯数字 chatId)")
-    d = _get_json(VIP + "/aisapi/ai-search/sharing-chats/" + chat_id, None, rate)
-    chats = []
-    for c in d.get("chats") or []:
-        refs = [{"title": x.get("title"), "url": x.get("url"),
-                 "summary": (x.get("summary") or "")[:200],
-                 "entityType": x.get("entityType"), "entityId": x.get("entityId")}
-                for x in (c.get("recallDocuments") or [])]
-        chats.append({"question": c.get("searchText"), "answer": c.get("content"),
-                      "answerType": c.get("answerType"), "refs": refs})
-    return {"ok": True, "chatId": chat_id, "count": len(chats), "chats": chats}
-
-
 # ================= 公开面:ask / search / read =================
 def search(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1,
            type_=None, rerank=None, budget=None, rate=None):
@@ -989,7 +936,6 @@ def search(text, product_id=None, page=1, page_size=10, global_=False, sorts_typ
                             rerank=RERANK_DEFAULT if rerank is None else bool(rerank),
                             budget=budget, rate=rate)
     res["stats"] = {"upstreamCalls": _up_now() - n0,
-                    "cacheHits": res.get("_cacheHits", 0),
                     "elapsedMs": round((time.time() - t0) * 1000, 1)}
     log("SEARCH:", str(text)[:50], "| total", res.get("total"), "| returned", len(res.get("results") or []))
     return res
@@ -1029,7 +975,7 @@ def ask(text=None, keywords=None, product_id=None, top_k=None, budget=None,
 
     返回资料包(与走 HTTP 时同构):
       routes[] 拆解明细(kind/terms/why/productIds/sortsType)、
-      sources[]{rank,type,id,questionId,title,url,snippet,fromCache,fusedScore,products,
+      sources[]{rank,type,id,questionId,title,url,snippet,fusedScore,products,
                 detail{…,chunks[]}},
       budget{max,used,upstreamCalls}、budget_exhausted、effectiveProductId、
       synthesisBrief(召回信号:来源数/融合高分段/命中路数/预算状态/召回提示)、
@@ -1062,7 +1008,3 @@ def ask(text=None, keywords=None, product_id=None, top_k=None, budget=None,
         "| upstream", res["budget"]["used"], "/", res["budget"]["max"],
         "| rate", rate_used, "| exhausted", res["budget_exhausted"])
     return res
-
-
-# 未收编的旧服务能力(share 端点):下一张票决定其去留,本张不对外暴露。
-_read_share = _share_read
