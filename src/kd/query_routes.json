@@ -4,10 +4,9 @@
   "maxRoutes": 7,
   "searchPageSize": 25,
   "rawRoute": {
-    "enabled": true,
     "sortsType": 1,
     "maxChars": 100,
-    "note": "原句路(ADR-0009):完整问句作为独立一路参与 RRF,固定 sortsType=1(相关性排序)。实测同一文档在原句+st=1 下排第 1,片段路由融合后掉到第 23,top4 深读时金牌出局;MMLF 表 3 亦证原查询须独立成路。它不是兜底路,保席位不被截断。sortsType 语义:0/1=相关性,2/3=时间倒序(对老文档/长尾文档是结构性盲区)。maxChars=100 是**上游硬闸**:text 超 100 原始字符(含标点/空格)上游返回 errorCode:409 空壳,长问句会静默变成零结果。"
+    "note": "原句路(ADR-0009):完整问句作为独立一路参与 RRF,固定 sortsType=1(相关性排序)。实测同一文档在原句+st=1 下排第 1,片段路由融合后掉到第 23,top4 深读时金牌出局;MMLF 表 3 亦证原查询须独立成路。它不是兜底路,保席位不被截断。本路**恒常启用**:无 enabled 开关(旧开关无任何关闭方,且 ADR-0009/CONTEXT 均把原句路定为恒常参与,留开关等于给已验证必备的能力留不存在的需求)。仅当问句为空时不产路。sortsType 语义:0/1=相关性,2/3=时间倒序(对老文档/长尾文档是结构性盲区)。maxChars=100 是**上游硬闸**:text 超 100 原始字符(含标点/空格)上游返回 errorCode:409 空壳,长问句会静默变成零结果。"
   },
   "budget": {
     "maxUpstreamPerAsk": 64,
@@ -15,9 +14,8 @@
   },
   "deepRead": { "topK": 4 },
   "rate": {
-    "note": "两档限速(CONTEXT v6 匿名链路):interactive=交互会话短突发 2-3 请求/秒+随机抖动;/ask 默认用 interactive;background=后台/摄取任务 1 请求/秒。只对真实上游请求生效,本地缓存命中不计。KSEARCH_RATE 或请求参数 rate 可切档。",
-    "interactive": { "burst": 3, "rps": 2.5, "jitterMs": [40, 220] },
-    "background": { "burst": 1, "rps": 1.0, "jitterMs": [0, 120] }
+    "note": "上游限速(匿名链路):interactive=交互会话短突发 2-3 请求/秒+随机抖动。只对真实上游请求生效,本地缓存命中不计。background 档与切档通路(KSEARCH_RATE 环境变量、请求级 set_profile)已删除——该档的唯一生产者是已随去服务化删除的摄取/评测脚本,场景不存在。公开签名的 rate= 参数保留(对外契约),传不存在档名时回落保守默认。",
+    "interactive": { "burst": 3, "rps": 2.5, "jitterMs": [40, 220] }
   },
   "displayOrder": ["answer", "knowledge", "article"],
   "displayNote": "资料包展示排序:answer 优先(症状对齐),knowledge 紧随(根因);深读选择仍按融合排名并保证两种类型都覆盖。",

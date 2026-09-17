@@ -150,7 +150,9 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 ## 回归
 
 改内核/CLI 后:`python3 tests/kd_regression.py`(离线组 10 项,不联网、不需要任何环境变量)。
-联网用例加 `--online`。公开面守卫另跑 `python3 scripts/check_core_surface.py`(应为 PASS)。
+联网用例加 `--online`。公开面守卫 `python3 scripts/check_core_surface.py` 已并入两个
+安装器的装机闸门(10 条判据:公开面/签名/异常身份/health 依赖/版本单一真源/kind 集合一致),
+手工改内核时也请照跑。
 检索侧改动另需手工用例验收(原 `run_eval` 评测体系已随去服务化删除)。
 
 ## 安全

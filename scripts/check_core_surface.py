@@ -140,6 +140,92 @@ def _health_impl_deps(src):
     return {"status": "ok", "reason": "", "path": cli_path, "deps": deps}
 
 
+def _read_pyproject_version(root):
+    """从 pyproject.toml 取 version(不引第三方 toml 解析,只认本项目的一行写法)。"""
+    path = os.path.join(root, "pyproject.toml")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r'\s*version\s*=\s*["\']([^"\']+)["\']', line)
+                if m:
+                    return m.group(1), path
+    except OSError as e:
+        return None, "%s(%s)" % (path, e.__class__.__name__)
+    return None, path
+
+
+def _check_version_single_source(src):
+    """版本号单一真源:实现体 VERSION 是唯一出处,其余三处必须由它派生。
+
+    比较口径:pyproject 用三段(PEP 440),实现体用两段,故只比"前两段"是否一致;
+    __init__.__version__ 与 cli._VERSION 必须与实现体逐字相等。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import importlib
+        impl = importlib.import_module("kd._core_impl")
+        pkg = importlib.import_module("kd")
+        kdcli = importlib.import_module("kd.cli")
+    except Exception as e:
+        return False, "无法 import 以校验版本(%s: %s)" % (e.__class__.__name__, e)
+
+    want = getattr(impl, "VERSION", None)
+    if not want:
+        return False, "实现体缺少 VERSION 常量(单一真源不存在)"
+
+    got_pkg = getattr(pkg, "__version__", None)
+    got_cli = getattr(kdcli, "_VERSION", None)
+    pyv, pypath = _read_pyproject_version(root)
+
+    problems = []
+    if got_pkg != want:
+        problems.append("kd.__version__=%r != VERSION=%r" % (got_pkg, want))
+    if got_cli != want:
+        problems.append("cli._VERSION=%r != VERSION=%r" % (got_cli, want))
+    if pyv is None:
+        problems.append("读不到 pyproject.toml 的 version(%s)" % pypath)
+    elif str(pyv).split(".")[:2] != str(want).split(".")[:2]:
+        problems.append("pyproject version=%r 前两段 != VERSION=%r" % (pyv, want))
+
+    if problems:
+        return False, "; ".join(problems)
+    return True, ""
+
+
+def _check_kind_consistency(src, impl):
+    """kind 集合一致性:ENTITY_KINDS / _DETAIL_KINDS / cli 白名单三处必须同集合。
+
+    cli 侧不 import(它有 argparse 副作用且 import 期就要 _impl()),改用正则读源,
+    这与 _health_impl_deps 的"不手写第二份真相"同纪律。
+    """
+    if impl is None:
+        return False, "kd.core._impl() 不可用,无法校验 kind 集合"
+    entity = getattr(impl, "ENTITY_KINDS", None)
+    detail = getattr(impl, "_DETAIL_KINDS", None)
+    if not entity or not detail:
+        return False, "实现体缺少 ENTITY_KINDS 或 _DETAIL_KINDS"
+    if set(entity) != set(detail):
+        return False, "ENTITY_KINDS=%r != _DETAIL_KINDS=%r" % (entity, detail)
+
+    cli_path = os.path.join(src, "kd", "cli.py")
+    try:
+        with open(cli_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return False, "读不到 %s(%s)" % (cli_path, e.__class__.__name__)
+
+    # cli 必须从实现体取白名单(单一真源),不得复制字面量。
+    # 判据:文件里不得出现裸的 ("knowledge", "answer", "article") 字面量。
+    literal = re.search(r'\(\s*"knowledge"\s*,\s*"answer"\s*,\s*"article"\s*\)', text)
+    if literal:
+        return False, ("cli.py 里仍有裸 kind 字面量(第 %d 字符处)——"
+                       "应从 _IMPL.ENTITY_KINDS 取,单一真源"
+                       % literal.start())
+    if "_IMPL.ENTITY_KINDS" not in text and "ENTITY_KINDS" not in text:
+        return False, "cli.py 未引用 ENTITY_KINDS(白名单与实现体脱钩)"
+    return True, ""
+
+
 def collect():
     """执行全部判据,返回结果字典。不抛异常(便于 --json 稳定输出)。"""
     src = _src_dir()
@@ -214,6 +300,18 @@ def collect():
     else:
         health_probe_reason = ""
 
+    # 判据 8:版本号单一真源。
+    # 抓的是"实现体 VERSION / 包 __version__ / cli._VERSION / pyproject version
+    # 四份字面量各自演化"这一类漂移——此前实测为 6.2 / 0.1.0 / 6.2 / 6.2.0,
+    # 而 pipx install 会把 __version__ 当成发布版本号。
+    version_probe, version_reason = _check_version_single_source(src)
+
+    # 判据 9:kind 集合一致性。
+    # 抓的是"read 的 --kind 白名单 / search 的 --type 白名单 / 详情分发表
+    # 三份字面量不同源"——此前分发表有 4 个 kind(answer_detail)、公开白名单 3 个,
+    # 加删 kind 不会被任何断言发现。
+    kind_probe, kind_reason = _check_kind_consistency(src, impl)
+
     checks = {
         "no_leaked_names": not leaks,
         "no_missing_names": not missing,
@@ -223,6 +321,8 @@ def collect():
         "signatures unchanged": not sig_mismatch,
         "exception identity consistent": all(exc_identity.values()),
         "health impl deps resolvable": health_probe,
+        "version single source": version_probe,
+        "kind set consistent": kind_probe,
     }
     return {
         "ok": all(checks.values()),
@@ -243,6 +343,10 @@ def collect():
         "health_deps": health_deps,
         "health_missing": health_missing,
         "health_check_reason": health_probe_reason,
+        "version_probe": version_probe,
+        "version_reason": version_reason,
+        "kind_probe": kind_probe,
+        "kind_reason": kind_reason,
         "checks": checks,
     }
 
@@ -274,6 +378,10 @@ def main():
         if r["health_missing"]:
             print("  失联依赖: %s(health 会崩,必须在实现体里补回或改 cmd_health)"
                   % ", ".join(r["health_missing"]))
+        if r["version_reason"]:
+            print("  版本判据 8 失败原因: %s" % r["version_reason"])
+        if r["kind_reason"]:
+            print("  kind 判据 9 失败原因: %s" % r["kind_reason"])
         for k, v in r["checks"].items():
             print("  [%s] %s" % ("PASS" if v else "FAIL", k))
         print("结论: %s" % ("PASS(公开面=ask/search/read+3 异常,零漏网)" if r["ok"] else "FAIL"))

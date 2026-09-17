@@ -17,10 +17,14 @@ import sys
 
 from . import core
 
-_VERSION = "6.2"
+# 单一真源:版本号与类型白名单都从实现体取,不在本文件复制字面量。
+# (此前 _VERSION / _VALID_KINDS / _VALID_TYPES 三份字面量与实现体各自演化,
+#  watch 不到漂移。)
+_IMPL = core._impl()
 
-_VALID_KINDS = ("knowledge", "answer", "article")
-_VALID_TYPES = ("knowledge", "answer", "article")
+_VERSION = _IMPL.VERSION
+_VALID_KINDS = _IMPL.ENTITY_KINDS
+_VALID_TYPES = _IMPL.ENTITY_KINDS
 
 
 def _out(obj):
@@ -138,7 +142,7 @@ def cmd_health(_a):
         "maxRoutes": routes_max,
         "deepReadTopK": topk,
         "budgetMax": _cp._cfg_budget_max(),
-        "rateProfile": _cp._rate_profile(None),
+        "rateProfile": _cp._rate_profile(),
         "rerank": _cp.RERANK_DEFAULT,
         "textMax": _cp.UPSTREAM_TEXT_MAX,
         "commands": ["search", "read", "ask", "health"],

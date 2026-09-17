@@ -1,5 +1,6 @@
 [project]
 name = "kingdee-knowledge-kit"
+# 单一真源:与 src/kd/_core_impl.py 的 VERSION 保持一致(6.2.0 是 6.2 的 PEP 440 三段写法)。
 version = "6.2.0"
 description = "kd — 金蝶官方知识库检索 CLI(匿名免费:零账号/零点数/零模型)。只产资料包,合成权在调用方 agent。"
 readme = "README.md"

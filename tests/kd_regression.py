@@ -51,8 +51,12 @@ RUN = os.path.join(SRC, "kd_run.py")
 # `semanticRerank` 从"必须存在"降为"允许存在但不应出现"——它是**旧版残留字段**,
 # 不是等价性要求。同理 `stats.pipeline` 也只在旧 HTTP v4 路径存在过。
 ASK_KEYS = {"ok", "text", "total", "effectiveProductId", "routes", "queries", "sources",
-            "budget", "budget_exhausted", "note", "stats"}
+            "budget", "budget_exhausted", "stats"}
 ASK_LEGACY_KEYS = {"semanticRerank"}   # 旧服务字段:新内核不产出,出现即异常
+# note 已删除:它描述的能力("写穿落地缓存")随 ADR-0011 决策 3 整体取消,而该字段
+# 零消费者(SKILL.md 与 ANSWER-SPEC.md 都不读)。与 semanticRerank 同纪律:
+# 出现即异常,防止重构时把旧文案再复制回来。
+ASK_LEGACY_KEYS |= {"note"}
 ASK_NEW_KEYS = {"synthesisBrief"}
 BRIEF_KEYS = {"sourceCount", "topScores", "routeKinds", "routeCount", "budgetExhausted",
               "upstreamUsed", "upstreamMax", "recallHint"}
@@ -64,13 +68,17 @@ ROUTE_OPT_KEYS = {"sortsType", "productIds"}
 # sources[] 10 字段
 SOURCE_KEYS = {"rank", "type", "id", "questionId", "title", "url", "snippet",
                "fusedScore", "products", "detail"}
-# sources[].detail 16 字段(旧版 17,已摘 landing)。detail 是各 kind 的并集:
+# sources[].detail 18 字段(旧版 17,已摘 landing;本轮加 answersTaken/answersTotal
+# 两个截断信号键)。detail 是各 kind 的并集:
 # 预算是"字段名必须落在白名单内 + 必含核心字段",因为 answer/knowledge 天然字段集不同。
 DETAIL_BASE_KEYS = {"ok", "id", "type", "title", "contentText", "url", "products", "updatedAt"}
 DETAIL_ALLOWED_KEYS = DETAIL_BASE_KEYS | {
     "chunks", "isSolved", "answersCount", "views", "rewardCoins", "createdAt",
     "bestAnswer", "answers", "truncated", "supports", "questionId", "adopted",
-    "usefuls", "comments", "error"}
+    "usefuls", "comments", "error",
+    # 截断信号:已取/总数。此前 answer 帖被 max_answer_pages 截断时不置位
+    # truncated,调用方零信号;这两个键让"资料不完整"变成可判读的事实。
+    "answersTaken", "answersTotal"}
 CHUNK_KEYS = {"seq", "heading", "text"}
 
 # search 顶层 10 键;结果项 10 字段(并集:answer 条目额外带 questionId/questionBody/
@@ -405,7 +413,82 @@ def t_read_contract():
     check_subset(keys_of(d["stats"], "read.stats"), {"upstreamCalls", "elapsedMs"}, "read.stats")
 
 
-@case("online: ask 顶层 12 键 + synthesisBrief 8 字段", online=True)
+@case("online: read(answer) 契约 —— 键集/id 语义/截断信号", online=True)
+def t_read_answer_contract():
+    """answer 路径此前零覆盖(t_read_contract 与 t_cli_read 都只测 knowledge),
+    而它的返回形态与 knowledge 差异最大:多 answers/bestAnswer/isSolved 等,
+    且带 answersTaken/answersTotal 截断信号。基线从未描述过它,上游改字段没有
+    任何断言会发现。
+
+    同时钉住 id 语义:answer 只认 questionId(search 条目的 `id` 是回答 id,
+    拿去请求 /api/questions/{id} 必 404),故显式用 questionId 读取。
+    """
+    r = core.search(QUERY, product_id=93, page=1, page_size=10)
+    item = next((x for x in r["results"] if x["type"] == "answer"), None)
+    ok(item, "未取到 answer 条目")
+    qid = item.get("questionId")
+    ok(qid, "answer 条目缺 questionId(无法定位问题帖)")
+    time.sleep(1.2)
+    d = core.read("answer", qid)
+    ks = keys_of(d, "read(answer)")
+    # 核心键必须齐:这是 answer 路径与 knowledge 路径的形态差异所在
+    check_subset(ks, READ_KEYS | {"answersCount", "isSolved", "views", "rewardCoins",
+                                  "createdAt", "answersTaken", "answersTotal"},
+                 "read(answer) 顶层")
+    check_no_extra(ks, READ_KEYS | {"chunks", "views", "supports", "createdAt",
+                                    "isSolved", "answersCount", "rewardCoins",
+                                    "bestAnswer", "answers", "truncated", "questionId",
+                                    "adopted", "usefuls", "comments",
+                                    "answersTaken", "answersTotal"}, "read(answer) 顶层")
+    ok(d["ok"] is True, "read(answer).ok 应为 True")
+    ok(d["type"] == "answer", "read(answer).type 应为 answer")
+    ok(str(d["id"]) == str(qid), "read(answer).id 应回显传入的 questionId")
+    ok("landing" not in ks, "read(answer) 仍返回 landing 字段")
+
+    # 截断信号(工单本轮新增):已取/总数必须都是 int,且已取 <= 总数。
+    # 此前 max_answer_pages 造成的截断走正常退出、不置 truncated,调用方零信号。
+    ok(isinstance(d.get("answersTaken"), int), "answersTaken 应为 int,实为 %r" % (d.get("answersTaken"),))
+    ok(isinstance(d.get("answersTotal"), int) or d.get("answersTotal") is None,
+       "answersTotal 应为 int 或 None,实为 %r" % (d.get("answersTotal"),))
+    taken = d.get("answersTaken")
+    total = d.get("answersTotal")
+    if isinstance(total, int) and total >= 0:
+        ok(taken <= total, "answersTaken(%r) 不应大于 answersTotal(%r)" % (taken, total))
+    ok(isinstance(d.get("answers"), list), "answers 应为 list")
+    ok(len(d["answers"]) == taken, "answers 长度(%d)应等于 answersTaken(%d)"
+       % (len(d["answers"]), taken))
+    # 逐个回答条目:硬契约字段
+    for a in d["answers"]:
+        aks = keys_of(a, "answer 条目")
+        check_subset(aks, {"id", "adopted", "contentText"}, "answer 条目")
+    check_subset(keys_of(d["stats"], "read(answer).stats"),
+                 {"upstreamCalls", "elapsedMs"}, "read(answer).stats")
+
+
+@case("online: read 的 answer 路径只认 questionId(传回答 id 应失败)", online=True)
+def t_read_answer_id_semantics():
+    """钉住 id 语义单一口径:search 条目的 `id` 是回答 id,不是问题 id。
+
+    此前 `_fetch_for_item` 有 `questionId or id` 兜底,公开的 read 路径没有,
+    同一输入两处行为相反。兜底已移除,这里守住"传回答 id 必须失败而不是静默读错帖"。
+    """
+    r = core.search(QUERY, product_id=93, page=1, page_size=10)
+    item = next((x for x in r["results"] if x["type"] == "answer"), None)
+    ok(item, "未取到 answer 条目")
+    aid, qid = item.get("id"), item.get("questionId")
+    ok(aid and qid and str(aid) != str(qid),
+       "本用例需要 id != questionId 的条目(实得 id=%r qid=%r)" % (aid, qid))
+    time.sleep(1.2)
+    try:
+        d = core.read("answer", aid)
+    except Exception:
+        return   # 上游对错误 id 报错 = 期望行为
+    # 若不报错,则必须证明它没有把回答 id 当成问题 id 读出一个"别的帖子"
+    ok(str(d.get("id")) != str(aid) or d.get("ok") is False,
+       "read(answer, 回答id) 静默成功了:read 的 id 口径已分裂")
+
+
+@case("online: ask 顶层 11 键 + synthesisBrief 8 字段", online=True)
 def t_ask_contract():
     p = core.ask(QUERY, product_id=93, top_k=3)
     ks = keys_of(p, "ask")
@@ -457,7 +540,7 @@ def t_ask_routes():
        "显式关键词应各成一路,实为 %r" % ([r["kind"] for r in pk["routes"]],))
 
 
-@case("online: ask sources[] 10 字段 + detail 16 字段 + chunks 3 字段(降级态另判)", online=True)
+@case("online: ask sources[] 10 字段 + detail 18 字段 + chunks 3 字段(降级态另判)", online=True)
 def t_ask_sources():
     p = core.ask(QUERY, product_id=93, top_k=3)
     ok(p["sources"], "ask 未产出任何 sources")

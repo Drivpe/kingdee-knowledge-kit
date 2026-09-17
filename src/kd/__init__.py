@@ -10,5 +10,11 @@
 导入方式:把 `src/` 加进 sys.path 后 `from kd import core`;或直接用仓库根的启动器
 `python3 src/kd_run.py …`(它自建 bootstrap),以及 `PYTHONPATH=src python3 -m kd …`。
 """
-__version__ = "0.1.0"
+import importlib as _importlib
+
+# 版本号单一真源:实现体里的 VERSION。此前本文件写 0.1.0、cli 写 6.2、
+# pyproject 写 6.2.0 —— pipx install 会把 0.1.0 当成真实版本号发布。
+__version__ = _importlib.import_module("kd._core_impl").VERSION
+del _importlib
+
 __all__ = ["core", "cli"]

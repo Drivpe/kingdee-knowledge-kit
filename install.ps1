@@ -201,7 +201,15 @@ if (-not $DryRun -and -not $NoVerify) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[install] ✗ 回归未全绿,检查上方 FAIL 项" -ForegroundColor Red; exit 1
     }
-    Step "✓ kd 可执行且回归通过"
+    # 公开面守卫:回归测不到它要测的东西(t_public_surface 只查 hasattr,
+    # 而 _rrf_fuse 曾是 hasattr=True 的漏网名)。守卫此前只出现在 README 文字里、
+    # 无任何自动路径调用,故并入装机闸门——否则它等于不存在。
+    Step "公开面守卫:scripts\check_core_surface.py"
+    & $pyCmd (Join-Path $Repo "scripts\check_core_surface.py")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[install] ✗ 公开面守卫未通过(公开面/签名/版本/kind 集合有漂移)" -ForegroundColor Red; exit 1
+    }
+    Step "✓ kd 可执行且回归+守卫通过"
 } elseif ($NoVerify) {
     Step "跳过装机自检(-NoVerify)"
 }

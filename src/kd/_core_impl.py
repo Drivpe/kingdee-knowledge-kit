@@ -33,6 +33,15 @@ VIP = "https://vip.kingdee.com"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0"
 HDRS = {"User-Agent": UA, "Accept": "application/json"}
 
+# ---- 单一真源(守卫/回归钉住,勿在别处复制字面量) ----
+# 版本号:pyproject.toml 的 version 与此处保持一致(6.2.0 = 6.2 的三段写法),
+# __init__.__version__ 与 cli._VERSION 均从此处取,消除三份真相。
+VERSION = "6.2"
+
+# 实体类型/详情 kind 白名单:search 的 --type 与 read 的 --kind 共用同一集合。
+# 此前是 cli.py 两份 + 本文件一份内联元组共三份字面量,加合法类型时必漏改。
+ENTITY_KINDS = ("knowledge", "answer", "article")
+
 # 包内数据文件:拆解规则/预算/限速档(语料可配置;上游迁移时随包走)。
 _ROUTE_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query_routes.json")
 _ROUTE_CFG = None
@@ -180,26 +189,33 @@ class _BudgetExhausted(Exception):
 
 
 class _RateLimiter:
-    """上游限速两档(匿名链路):interactive=交互会话短突发 2-3 请求/秒+随机抖动
-    (默认档,/ask 用);background=后台/摄取任务 1 请求/秒。令牌桶实现,只对真实上游
-    请求生效(_get_json 入口),本地缓存命中不计;触发节流写日志+stderr,限速可观测。"""
+    """上游限速(匿名链路):令牌桶实现,只对真实上游请求生效(_get_json 入口),
+    本地缓存命中不计;触发节流写日志+stderr,限速可观测。
+
+    配置里只有 interactive 一档。曾存在 background 档(1 req/s)与两条切档通路
+    (请求级 set_profile、环境变量 KSEARCH_RATE),两者均已删除:
+      * 请求级切档的唯一调用方是自身,全仓无调用方传过非 None 档名;
+      * background 档的唯一生产者是已随去服务化删除的摄取/评测脚本,场景不存在。
+    公开签名 `rate=` 参数予以保留(守卫 SIGNATURE_BASELINE 逐字钉死,属对外契约);
+    传入配置中不存在的档名时回落到保守默认,不报错、不静默切档。
+    """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._next = 0.0
-        self._profile = None  # 请求级切档;None=环境/配置默认
 
     def profile(self, name=None):
         cfg = _route_cfg().get("rate") or {}
-        name = str(name or self._profile or os.environ.get("KSEARCH_RATE") or "interactive").lower()
-        p = cfg.get(name)
-        if not isinstance(p, dict):  # 配置缺失时的安全默认
-            p = {"burst": 1, "rps": 1.0, "jitterMs": [0, 120]} if name == "background" \
-                else {"burst": 3, "rps": 2.5, "jitterMs": [40, 220]}
-        return name, p
-
-    def set_profile(self, name):
-        self._profile = name
+        wanted = str(name or "interactive").lower()
+        p = cfg.get(wanted)
+        if not isinstance(p, dict):
+            # 配置缺失/档名不存在:回落 interactive(配置里有则用它的数值,没有则用
+            # 保守默认)。档名一并归一,避免"报 interactive 却按保守值限速"的名实不符。
+            p = cfg.get("interactive")
+            wanted = "interactive"
+            if not isinstance(p, dict):
+                p = {"burst": 1, "rps": 1.0, "jitterMs": [0, 120]}
+        return wanted, p
 
     def wait(self, name=None):
         pname, p = self.profile(name)
@@ -224,10 +240,8 @@ class _RateLimiter:
 _RATE = _RateLimiter()
 
 
-def _rate_profile(name=None):
-    """读/切当前限速档。后台/摄取任务开始时切 background。"""
-    if name is not None:
-        _RATE.set_profile(name)
+def _rate_profile():
+    """读当前限速档名(固定 interactive;切档通路已删除)。"""
     return _RATE.profile()[0]
 
 
@@ -399,7 +413,7 @@ def _norm_item(x, et):
     if et == "knowledge":
         kid = str(x.get("knowledgeId") or x.get("id") or "")
         return {"type": "knowledge", "id": kid,
-                "url": f"{VIP}/knowledge/{kid}" if kid else None,
+                "url": _URL_OF["knowledge"] % kid if kid else None,
                 "title": html2text(hl.get("title") or x.get("title") or "") or None,
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "products": classes[:3],
@@ -409,7 +423,7 @@ def _norm_item(x, et):
         q = x.get("question") or {}
         qid = str(x.get("questionId") or q.get("id") or "")
         return {"type": "answer", "id": str(x.get("id") or ""), "questionId": qid,
-                "url": f"{VIP}/question/{qid}" if qid else None,
+                "url": _URL_OF["answer"] % qid if qid else None,
                 "title": html2text(hl.get("question.title") or q.get("title") or "") or None,
                 "questionBody": html2text(q.get("description") or "")[:500] or None,
                 "snippet": html2text(hl.get("description") or x.get("summary") or "")[:400] or None,
@@ -421,7 +435,7 @@ def _norm_item(x, et):
     if et == "article":
         arid = str(x.get("id") or "")
         return {"type": "article", "id": arid,
-                "url": f"{VIP}/article/{arid}" if arid else None,
+                "url": _URL_OF["article"] % arid if arid else None,
                 "title": html2text(hl.get("title") or x.get("title") or "") or None,
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "products": classes[:3],
@@ -515,7 +529,7 @@ def _knowledge_article(kid, budget=None, rate=None):
     d = _get_json(VIP + "/knowledgeapi/knowledge/" + str(kid), budget, rate)
     return {"ok": True, "id": str(kid), "type": "knowledge", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": f"{VIP}/knowledge/{kid}",
+            "url": _URL_OF["knowledge"] % kid,
             "products": [p.get("name") for p in (d.get("products") or [])][:3],
             "updatedAt": d.get("updatedAt")}
 
@@ -548,7 +562,7 @@ def _question_detail(qid, with_answers=True, max_answer_pages=3, max_detail=5, b
     d = _get_json(VIP + "/api/questions/" + str(qid), budget, rate)
     out = {"ok": True, "id": str(qid), "type": "answer", "title": d.get("title"),
            "contentText": html2text(d.get("description")),
-           "url": f"{VIP}/question/{qid}",
+           "url": _URL_OF["answer"] % qid,
            "isSolved": d.get("isSolved"), "answersCount": d.get("answers"),
            "views": d.get("views"), "rewardCoins": d.get("rewardCoins"),
            "products": _q_products(d),
@@ -557,20 +571,30 @@ def _question_detail(qid, with_answers=True, max_answer_pages=3, max_detail=5, b
     if isinstance(best, list) and best:
         out["bestAnswer"] = _answer_brief(best[0])
     if with_answers:
-        # 预算硬上限:回答展开(翻页+逐条详情)是深读里最贵的请求,超限即停,
-        # 保留已获部分并标 truncated——截断结果不写穿落盘,避免幂等把残缺全文钉死。
+        # 回答展开(翻页+逐条详情)是深读里最贵的请求。三种截断成因,全部显式置位
+        # `truncated`,并给出"已取/总数"两个数字——截断而不标记等于把"资料不完整"
+        # 伪装成"资料就是这样",调用方按 ADR-0010 判档会因此失真。
+        #   ① 翻页上限(max_answer_pages):正常退出循环,此前不置位 = 静默截断
+        #   ② 逐条详情上限(max_detail):列表摘要未被补全为详情
+        #   ③ 上游预算耗尽(_BudgetExhausted)
         truncated = False
-        answers, page = [], 1
+        answers, page, total_pages = [], 1, None
         try:
             while page <= max_answer_pages:
                 ad = _get_json(VIP + "/api/questions/%s/answers?page=%d&pageSize=20" % (qid, page),
                                budget, rate)
                 for a in ad.get("content") or []:
                     answers.append(_answer_brief(a))
-                if page >= (ad.get("totalPages") or 1):
+                tp = ad.get("totalPages") or 1
+                total_pages = tp if total_pages is None else max(total_pages, tp)
+                if page >= tp:
                     break
                 page += 1
+            if total_pages is not None and page >= max_answer_pages and max_answer_pages < total_pages:
+                truncated = True   # 翻页上限先到,帖内还有未取的页
             answers.sort(key=lambda a: (not a["adopted"]))
+            if len(answers) > max(max_detail, 0):
+                truncated = True   # 详情补全只覆盖前 N 条,其余仍是列表摘要
             for a in answers[:max(max_detail, 0)]:
                 det = _answer_brief(_get_json(VIP + "/api/answers/" + a["id"], budget, rate))
                 if len(det.get("contentText") or "") > len(a.get("contentText") or ""):
@@ -579,23 +603,18 @@ def _question_detail(qid, with_answers=True, max_answer_pages=3, max_detail=5, b
                     a["discussion"] = det["discussion"]
         except _BudgetExhausted:
             truncated = True
-        except Exception:
-            pass
+        except UpstreamError as e:
+            # 与 _ask_bundle 同纪律:上游故障必须显式记日志,不得与"该路无结果"混为一谈。
+            log("UPSTREAM_ERR:", "route=question_detail qid=%s code=%s msg=%s"
+                % (qid, e.code, e.message))
+            total_pages = None
+            truncated = True
         if truncated:
             out["truncated"] = True
+        out["answersTaken"] = len(answers)
+        out["answersTotal"] = d.get("answers")
         out["answers"] = answers
     return out
-
-
-def _answer_detail(aid, budget=None, rate=None):
-    d = _get_json(VIP + "/api/answers/" + str(aid), budget, rate)
-    q = d.get("question") or {}
-    qid = str(d.get("questionId") or q.get("id") or "")
-    return {"ok": True, "id": str(aid), "questionId": qid,
-            "title": q.get("title"), "contentText": html2text(d.get("description")),
-            "adopted": _is_true(d.get("isAdopt")), "usefuls": d.get("usefuls"),
-            "url": f"{VIP}/question/{qid}" if qid else None,
-            "updatedAt": d.get("updatedAt")}
 
 
 def _article_detail(aid, budget=None, rate=None):
@@ -603,29 +622,32 @@ def _article_detail(aid, budget=None, rate=None):
     classes = [c.get("name") for c in (d.get("classifies") or []) if c.get("name")]
     return {"ok": True, "id": str(aid), "type": "article", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": f"{VIP}/article/{aid}",
+            "url": _URL_OF["article"] % aid,
             "products": classes[:3], "supports": d.get("supports"), "views": d.get("views"),
             "updatedAt": d.get("updatedAt")}
 
 
 _DETAIL_FN = {"knowledge": _knowledge_article, "answer": _question_detail,
-              "article": _article_detail, "answer_detail": _answer_detail}
+              "article": _article_detail}
 _DETAIL_KINDS = tuple(_DETAIL_FN)
+
+# 自洽断言:详情分发表的 kind 必须与 ENTITY_KINDS 逐项一致。此前分发表是 4 个 kind
+# (含被 CLI 封掉的 answer_detail)、公开白名单是 3 个,加/删 kind 时无人发现漂移。
+# 这条断言让"两份 kind 集合"在 import 期就锁死,守卫再钉住这张表不被旁路。
+if set(_DETAIL_KINDS) != set(ENTITY_KINDS):
+    raise RuntimeError("kind 集合漂移:_DETAIL_KINDS=%r 与 ENTITY_KINDS=%r 不一致"
+                       % (_DETAIL_KINDS, ENTITY_KINDS))
 
 
 def _detail(kind, oid, refresh=False, budget=None, rate=None):
     """详情统一入口(纯在线:不再写穿落地缓存)。
 
-    摘除写穿后本函数的语义只剩"取详情 + URL 补齐",保留它是因为 4 个 kind 的
+    摘除写穿后本函数的语义只剩"取详情",保留它是因为 3 个 kind 的
     分发点只应有一处;调用方(_fetch_for_item / read)无需知道分发表存在。
+    URL 由各 kind 函数按 `_URL_OF` 模板统一构造,不在此处补齐。
     预算:require/spend 在 _get_json。
     """
-    d = _DETAIL_FN[kind](oid, budget=budget, rate=rate)
-    if not d.get("url") and d.get("id"):
-        t = str(d.get("type") or kind).lower()
-        if t in _URL_OF:
-            d["url"] = _URL_OF[t] % d["id"]
-    return d
+    return _DETAIL_FN[kind](oid, budget=budget, rate=rate)
 
 
 # ---------- 多路关键词编排 ----------
@@ -634,7 +656,10 @@ def _fetch_for_item(item, refresh, budget=None, rate=None):
         if item["type"] == "knowledge":
             d = _detail("knowledge", item["id"], refresh, budget=budget, rate=rate)
         elif item["type"] == "answer":
-            d = _detail("answer", item.get("questionId") or item["id"], refresh, budget=budget, rate=rate)
+            # answer 只认问题 id(questionId):search 条目的 `id` 是回答 id,
+            # 拿去请求 /api/questions/{id} 必 404。此前的 `or item["id"]` 兜底会
+            # 把"传错 id"伪装成一次真实请求,故移除——口径单一,传错即快速失败。
+            d = _detail("answer", item["questionId"], refresh, budget=budget, rate=rate)
         elif item["type"] == "article":
             d = _detail("article", item["id"], refresh, budget=budget, rate=rate)
         else:
@@ -662,7 +687,6 @@ def _plan_routes(text=None, keywords=None, product_id=None):
     cfg = _route_cfg()
     max_routes = int(cfg.get("maxRoutes") or 7)
     raw_cfg = cfg.get("rawRoute") or {}
-    raw_on = raw_cfg.get("enabled", True)
     raw_sorts = int(raw_cfg.get("sortsType", 1))
     raw_max = int(raw_cfg.get("maxChars") or UPSTREAM_TEXT_MAX)
     if keywords:  # 调用方显式关键词:每词一路(保持 v5 兼容语义)
@@ -694,7 +718,7 @@ def _plan_routes(text=None, keywords=None, product_id=None):
 
     # 0) 原句路(ADR-0009):先占席位,固定 sortsType=1,不受截断挤压
     raw_route = None
-    if raw_on and text.strip():
+    if text.strip():
         raw_route = {"kind": "raw:question", "terms": clamp_query(text.strip(), raw_max),
                      "why": "原句路(相关性排序;片段路的词汇鸿沟无法覆盖时由此救回)",
                      "sortsType": raw_sorts}
@@ -859,9 +883,10 @@ def _ask_bundle(text=None, keywords=None, product_id=None, top_k=None,
                                      for a in (d.get("answers") or [])[:3]] if p)
             else:
                 atext = d.get("contentText") or ""
-            ch = _top_chunks(_chunk_text(atext), terms)
-            if ch:
-                d["chunks"] = ch
+            # 显式的空 [] 比"键不存在"好判档:调用方按 ANSWER-SPEC 第 3 条要
+            # "优先依据命中段落引用",需要能区分"这源确实没有可引段落"与
+            # "这条源根本没切片"。缺席只能靠 `"chunks" not in d` 反推。
+            d["chunks"] = _top_chunks(_chunk_text(atext), terms)
         sources.append({"rank": len(sources) + 1, "type": item["type"], "id": item.get("id"),
                         "questionId": item.get("questionId"),
                         "title": item.get("title"), "url": item.get("url"),
@@ -878,12 +903,7 @@ def _ask_bundle(text=None, keywords=None, product_id=None, top_k=None,
             "queries": [r["terms"] for r in routes],
             "sources": sources,
             "budget": {"max": _max, "used": _used, "upstreamCalls": _used},
-            "budget_exhausted": bool(_exhausted),
-            "note": "v6.2 原句路+多路关键词编排(规则在 kd/query_routes.json,语料可配置);"
-                    "sources 展示排序 answer 优先(症状对齐)、knowledge 紧随(根因);"
-                    "sources[].detail 已含全文并写穿落地缓存;knowledge/article 附 chunks"
-                    "(标题感知切片,top3 相关段);budget=上游请求硬上限,超限即停并标 budget_exhausted;"
-                    "effectiveProductId=本次实际生效的产品过滤"}
+            "budget_exhausted": bool(_exhausted)}
 
 
 def _synthesis_brief(pack):
@@ -922,13 +942,13 @@ def search(text, product_id=None, page=1, page_size=10, global_=False, sorts_typ
     page/page_size/sorts_type/global_ 直通上游。
     type_      可选过滤 knowledge|answer|article(过滤时跨页扫描补齐该类型)。
     rerank     信号重排(opt-in 实验,默认取 KSEARCH_RERANK,默认关)。
-    budget     Budget 实例(可复用计数);rate 限速档名。
+    budget     上游请求硬上限(int);rate 限速档名(默认 interactive)。
     返回:上游条目 + stats{upstreamCalls,elapsedMs}。非法入参 raise InternalError。
     """
     if not str(text or "").strip():
         raise InternalError("text required: 传具体功能名/业务名词/报错词")
-    if type_ and str(type_).lower() not in ("knowledge", "answer", "article"):
-        raise InternalError("bad type: %s(knowledge|answer|article)" % type_)
+    if type_ and str(type_).lower() not in ENTITY_KINDS:
+        raise InternalError("bad type: %s(%s)" % (type_, "|".join(ENTITY_KINDS)))
     clamp_query(str(text), UPSTREAM_TEXT_MAX, strict=True)
     n0, t0 = _up_now(), time.time()
     res = _knowledge_search(text, product_id=product_id, page=int(page), page_size=int(page_size),
@@ -989,11 +1009,11 @@ def ask(text=None, keywords=None, product_id=None, top_k=None, budget=None,
     for kw in (keywords or []):
         clamp_query(str(kw), UPSTREAM_TEXT_MAX, strict=True)
     bv = budget if budget is not None else _cfg_budget_max()
-    if not isinstance(bv, _Budget):
-        if not (isinstance(bv, int) or (isinstance(bv, str) and str(bv).isdigit())):
-            raise InternalError("bad budget: %r(应为正整数或 Budget 实例)" % (budget,))
-        bv = _Budget(bv)
-    rate_used = _rate_profile(str(rate) if rate else None)
+    if not (isinstance(bv, int) and not isinstance(bv, bool)) and \
+            not (isinstance(bv, str) and str(bv).isdigit()):
+        raise InternalError("bad budget: %r(应为非负整数)" % (budget,))
+    bv = _Budget(int(bv))
+    rate_used = str(rate).lower() if rate else _rate_profile()
     n0, t0 = _up_now(), time.time()
     res = _ask_bundle(text=text or None, keywords=keywords, product_id=product_id,
                       top_k=top_k if top_k is not None else (bv.max and None),
