@@ -81,14 +81,18 @@ DETAIL_ALLOWED_KEYS = DETAIL_BASE_KEYS | {
     "answersTaken", "answersTotal"}
 CHUNK_KEYS = {"seq", "heading", "text"}
 
-# search 顶层 10 键;结果项 10 字段(并集:answer 条目额外带 questionId/questionBody/
-# adopted/answersCount/comments,knowledge 带 useful,article 带 supports)
+# search 顶层 12 键(本轮多路清单化:新增 routeErrors / budget_exhausted);
+# 结果项字段同步新增 hitRoutes / routes(清单形态)。
+# ⚠️ 实测(2026-09-17 多路清单落地后)结果项**不再含 useful / contentLen**:
+# `_manifest_project` 是清单形态的投影(标题级信息),contentText 及其长度本就不该出现,
+# useful 未列入清单字段。故 RESULT_BASE_KEYS 与白名单都按实测的键并集重新定档。
 SEARCH_KEYS = {"ok", "text", "total", "queries", "page", "pageSize", "totalPages",
-               "results", "scanNote", "stats"}
+               "results", "scanNote", "stats", "routeErrors", "budget_exhausted"}
 RESULT_BASE_KEYS = {"type", "id", "url", "title", "snippet", "products", "views",
-                    "useful", "contentLen", "updatedAt"}
-RESULT_ALLOWED_KEYS = (RESULT_BASE_KEYS - {"useful"}) | {
-    "useful", "supports", "questionId", "questionBody", "adopted", "answersCount", "comments"}
+                    "hitRoutes", "routes", "updatedAt"}
+RESULT_ALLOWED_KEYS = RESULT_BASE_KEYS | {
+    "supports", "questionId", "questionBody", "adopted", "answersCount", "comments",
+    "useful", "contentLen"}
 
 # read:ok, id, type, title, contentText, url, products, updatedAt, stats(已摘 landing)
 READ_KEYS = {"ok", "id", "type", "title", "contentText", "url", "products", "updatedAt", "stats"}
@@ -328,7 +332,14 @@ def t_search_contract():
     check_no_extra(ks, SEARCH_KEYS | {"text"}, "search 顶层")
     ok(r["ok"] is True, "search.ok 应为 True")
     ok(r["text"] == QUERY, "search.text 应回显查询词")
-    ok(r["queries"] == [QUERY], "search.queries 应为 [查询词],实为 %r" % (r["queries"],))
+    # 契约变更(多路清单化):queries 从"等于查询词的单元素表"改为**实际执行路的检索词表**。
+    # 旧断言 `r["queries"] == [QUERY]` 描述的是单路语义;多路下首路恒为原句路(ADR-0009),
+    # 故改为"非空、首元素是原句、且无重复词"。
+    ok(r["queries"] and r["queries"][0] == QUERY,
+       "search.queries 首元素应为原句路(查询词),实为 %r" % (r["queries"],))
+    ok(len(r["queries"]) <= 7, "路数 %d 超过 maxRoutes=7" % len(r["queries"]))
+    ok(len(set(r["queries"])) == len(r["queries"]),
+       "queries 出现重复检索词(同一请求被发两次): %r" % (r["queries"],))
     ok(r["page"] == 1 and r["pageSize"] == 5, "分页回显不符: %r/%r" % (r["page"], r["pageSize"]))
     check_subset(keys_of(r["stats"], "search.stats"), {"upstreamCalls", "elapsedMs"}, "search.stats")
     ok(isinstance(r["total"], int), "search.total 应为 int")
@@ -652,17 +663,31 @@ def t_product_id_zero():
        "问句含「苍穹」应推导为 87 覆盖默认 93,实为 %r" % (pq["effectiveProductId"],))
 
 
-@case("online: v4 管线(rerank=1)与兼容路径(rerank=0)都可跑通", online=True)
+@case("online: search 多路清单取代 v4 单路管线(rerank 参数保留但不再切换实现)", online=True)
 def t_rerank_paths():
+    """契约变更(多路清单化):search 不再有"v4 管线(rerank=1)"这条并行实现。
+
+    旧用例断言 `rerank=0 → scanNote is None` 与 `rerank=1 → scanNote 含 'v4'`,
+    描述的是"单路深扫描 + RRF 重排"的旧二分。本轮 RRF 已从检索链路移除(见 spec
+    「丢弃 RRF」),两种 rerank 取值都走同一条多路清单实现,返回形态一致——这正是
+    "收敛参数而不是保留两套代码"的设计意图。故此处改为断言**两值行为等价**,
+    且都产出清单形态(带 hitRoutes),而不是断言某条已删除的旧管线的特征串。
+
+    `rerank` 参数本身保留:它是 `SIGNATURE_BASELINE` 逐字钉死的对外契约。
+    """
     r0 = core.search(QUERY, product_id=93, page=1, page_size=5, rerank=False)
     ok(r0["ok"] is True, "rerank=0 失败")
-    ok(r0["scanNote"] is None, "rerank=0 为 v3.2 兼容路径,scanNote 应为 None")
+    ok(r0["scanNote"] and "多路清单" in r0["scanNote"],
+       "rerank=0 应走多路清单实现,实为 %r" % (r0["scanNote"],))
+    ok(all("hitRoutes" in x for x in r0["results"]), "rerank=0 应产出清单形态")
     r1 = core.search(QUERY, product_id=93, page=1, page_size=5, rerank=True)
-    ok(r1["ok"] is True, "rerank=1(v4 管线)失败")
-    ok(r1["scanNote"] and "v4" in r1["scanNote"].lower(),
-       "rerank=1 应带 v4 管线 scanNote,实为 %r" % (r1["scanNote"],))
-    check_subset(keys_of(r1, "search"), SEARCH_KEYS, "search 顶层(v4)")
-    ok(r1["results"], "v4 管线零结果")
+    ok(r1["ok"] is True, "rerank=1 失败")
+    ok(r1["results"], "rerank=1 零结果")
+    check_subset(keys_of(r1, "search"), SEARCH_KEYS, "search 顶层(rerank=1)")
+    # 两值返回同一形态(同一实现),而非两条各自的管线段
+    ok(keys_of(r0, "search") == keys_of(r1, "search"),
+       "rerank 两值返回键集不一致: %r vs %r"
+       % (sorted(keys_of(r0, "search")), sorted(keys_of(r1, "search"))))
 
 
 @case("online: kd search 进程级调用(退出码 0 + JSON 契约)", online=True)
@@ -720,6 +745,289 @@ def t_cli_exactly_100():
     code, d, _ = cli("ask", q100, "--topk", "1", "--budget", "3")
     ok(code == 0, "恰好 100 字符应跑通,实测退出码 %r / %r" % (code, d))
     ok(d is not None and d.get("ok") is True, "100 字符未返回正常资料包")
+
+
+# ---------------------------------------------------------------- 执行器
+# ================= 离线组:多路清单去重与排序(合成条目,不打上游) =================
+# 排在执行器前:本组全部是纯函数断言(喂构造数据),不触网、不依赖上游语料。
+def _impl():
+    """内部观测口:多路清单的纯函数层(去重键/排序/投影)。
+
+    这些件是**有意的**内部件(不在 kd.core 公开面),用观测口取而非从 kd.core
+    摸私有属性——与 cli.cmd_health 取数的口径一致。
+    """
+    return core._impl()
+
+
+def _syn(et, i, qid=None, title=None, adopted=False):
+    """合成一个上游形态条目(用于喂 _norm_item),字段形状对齐实测响应。"""
+    if et == "answer":
+        return {"entity-type": "answer", "id": str(i), "questionId": str(qid or i),
+                "highlight": {"question.title": title or ("问题标题 %s" % i),
+                              "description": "回答正文 %s" % i},
+                "question": {"id": str(qid or i), "answers": 2, "moduleName": "财务云"},
+                "isAdopt": "true" if adopted else "false", "views": 10,
+                "contentLen": 100, "updatedAt": "2026-01-01"}
+    return {"entity-type": "knowledge", "id": str(i), "knowledgeId": str(i),
+            "highlight": {"title": title or ("知识标题 %s" % i), "content": "正文 %s" % i},
+            "classifies": [{"name": "星空旗舰版"}], "views": 10, "useful": 1,
+            "contentLen": 100, "updatedAt": "2026-01-01"}
+
+
+@case("offline: 多路去重 —— 同一 answer 被两路命中只出一条且 hitRoutes=2")
+def t_manifest_dedupe_hit_routes():
+    cp = _impl()
+    a = cp._norm_item(_syn("answer", 900, qid=800, title="同一帖回答"), "answer")
+    k = cp._norm_item(_syn("knowledge", 100), "knowledge")
+    # 路1: [answer, knowledge];路2: [answer]  —— answer 被两路命中
+    keys, hits, _first = cp._manifest_fuse([(1, [a, k]), (2, [a])])
+    ok(len(keys) == 2, "两条不同条目应去重为 2 条,实为 %d" % len(keys))
+    ak = cp._manifest_key(a)
+    ok(ak in hits, "answer 条目未进命中表")
+    ok(len(hits[ak]) == 2, "answer 被两路命中,hitRoutes 应为 2,实为 %d" % len(hits[ak]))
+    proj = cp._manifest_project(a, hits[ak])
+    ok(proj["hitRoutes"] == 2, "投影后的 hitRoutes 应为 2")
+    ok(proj["routes"] == [1, 2], "投影后的 routes 应为 [1,2],实为 %r" % (proj["routes"],))
+    ok(proj["title"] == "同一帖回答", "标题应透传")
+    ok("contentText" not in proj, "清单条目不得返回 contentText(要全文走 read)")
+    # 排序:命中 2 路的 answer 应排在命中 1 路的 knowledge 之前
+    ok(keys[0] == ak, "命中 2 路的条目应排首位,实得首条 %r" % (keys[0],))
+    # knowledge 只命中 1 路
+    kk = cp._manifest_key(k)
+    ok(len(hits[kk]) == 1, "knowledge 应只命中 1 路,实为 %d" % len(hits[kk]))
+
+
+@case("offline: answer 双 id 空间 —— 同一帖的不同回答不被合并")
+def t_manifest_answer_id_space():
+    cp = _impl()
+    # 同一 questionId(800)下的两条**不同回答**(id 901/902)
+    a1 = cp._norm_item(_syn("answer", 901, qid=800, title="帖子标题"), "answer")
+    a2 = cp._norm_item(_syn("answer", 902, qid=800, title="帖子标题"), "answer")
+    ok(a1["questionId"] == a2["questionId"] == "800", "构造数据应同帖")
+    ok(cp._manifest_key(a1) != cp._manifest_key(a2),
+       "去重键必须按回答 id 区分:两条不同回答得到同一个键 %r" % (cp._manifest_key(a1),))
+    ok(cp._manifest_key(a1) == "answer:901", "answer 去重键应为 answer:<回答id>,实为 %r" % (cp._manifest_key(a1),))
+    # 两路各自命中其中一条:清单必须是 2 条,而不是被并成 1 条
+    keys, hits, _first = cp._manifest_fuse([(1, [a1]), (2, [a2])])
+    ok(len(keys) == 2, "同帖不同回答应各自成条(2 条),实为 %d 条" % len(keys))
+    # 同一条被两路命中:仍只 1 条
+    keys2, hits2, _f2 = cp._manifest_fuse([(1, [a1]), (2, [a1])])
+    ok(len(keys2) == 1, "同一回答被两路命中应合并为 1 条,实为 %d 条" % len(keys2))
+    ok(len(hits2[cp._manifest_key(a1)]) == 2, "hitRoutes 应为 2")
+
+
+@case("offline: 命中共路数 → 上游原生序(不引入任何加权)")
+def t_manifest_order_native():
+    cp = _impl()
+    mk = lambda i: cp._norm_item(_syn("knowledge", i), "knowledge")
+    # 三路:路1 = [A, B], 路2 = [C], 路3 = []
+    A, B, C = mk(1), mk(2), mk(3)
+    keys, hits, first = cp._manifest_fuse([(1, [A, B]), (2, [C]), (3, [])])
+    # 全部命中 1 路 → 排序退化为"上游原生序" = 首次出现的(路序号, 路内名次)
+    order = [k.split(":")[1] for k in keys]
+    ok(order == ["1", "2", "3"],
+       "同路数时应按上游原生序(首次出现的路序+名次)排列,实得 %r" % (order,))
+    # 路2 排在路1 后面的条目,不能因为"路号更大"被提前
+    ok(first[cp._manifest_key(C)][0] == 2, "C 首次出现在路 2")
+    # 排序键的第一维是"命中路数"的**降序**
+    multi = cp._norm_item(_syn("knowledge", 9), "knowledge")
+    keys2, _h2, _f2 = cp._manifest_fuse([(1, [multi]), (2, [multi]), (1, [A])])
+    ok(keys2[0] == cp._manifest_key(multi),
+       "命中 2 路的条目应排在命中 1 路之前(降序),实得首条 %r" % (keys2[0],))
+    # 纯函数性质:不产生任何分数键
+    ok(not any("score" in k.lower() for k in keys2), "清单排序不得引入分数")
+
+
+@case("offline: 清单投影字段集固定(type/id/title/hitRoutes/routes,无 contentText)")
+def t_manifest_projection():
+    cp = _impl()
+    for et in ("knowledge", "answer", "article"):
+        n = cp._norm_item(_syn(et if et != "article" else "knowledge", 7), et)
+        if n is None:
+            continue
+        p = cp._manifest_project(n, {1, 2})
+        ks = set(p.keys())
+        for req in ("type", "id", "title", "hitRoutes", "routes"):
+            ok(req in ks, "%s 条目投影缺字段 %s" % (et, req))
+        ok("contentText" not in ks, "%s 条目投影不得含 contentText" % et)
+        ok(p["hitRoutes"] == 2 and p["routes"] == [1, 2], "%s 投影的命中信息不符" % et)
+
+
+@case("offline: 标题解析降级链 —— 纯高亮壳/空缺/点号键都不产生静默空标题")
+def t_title_of_fallbacks():
+    cp = _impl()
+    # ① 点号同层键(上游 answer 的真实形态)优先
+    ok(cp._title_of("预算模板使用<em>状态</em>显示禁用", None) == "预算模板使用状态显示禁用",
+       "点号键应被解析并剥掉高亮标签")
+    # ② 首候选为"存在但空串"时,不得挡住后面有货的候选(silent None 的根源)
+    ok(cp._title_of("", "真标题") == "真标题", "空串候选应被跳过而非短路")
+    ok(cp._title_of(None, "真标题") == "真标题", "None 候选应被跳过")
+    # ③ 纯高亮标签壳:html2text 剥标签后仍有文本 → 非空
+    ok(cp._title_of("<em>禁用</em>") == "禁用", "纯标签壳应剥出文本")
+    # ④ 全空 → None(不是空串:契约里字段可为 None,但不得是"" 这种"看起来有值"的形态)
+    ok(cp._title_of(None, "", "   ") is None, "全空候选应返回 None")
+    # ⑤ answer 条目走真实 _norm_item:标题必须非空
+    a = cp._norm_item(_syn("answer", 900, qid=800, title="帖子标题"), "answer")
+    ok(a["title"] == "帖子标题", "answer 条目标题解析失败: %r" % (a["title"],))
+    # ⑥ 上游把标题平铺在条目顶层(assistant 形状变体)也要兜住
+    raw = {"entity-type": "answer", "id": "1", "questionId": "2",
+           "highlight": {}, "question": {"id": "2"}, "title": "平铺标题"}
+    ok(cp._norm_item(raw, "answer")["title"] == "平铺标题", "顶层平铺标题未被兜住")
+
+
+# ================= 联网组:多路清单的端到端行为(真实上游) =================
+@case("online: search 多路清单 —— 顶层 12 键 + 每条带 hitRoutes/routes、无 contentText", online=True)
+def t_search_manifest_contract():
+    r = core.search(QUERY, product_id=93, page=1, page_size=10)
+    ks = keys_of(r, "search")
+    check_subset(ks, SEARCH_KEYS, "search 顶层")
+    check_no_extra(ks, SEARCH_KEYS | {"text"}, "search 顶层")
+    ok(r["ok"] is True, "search.ok 应为 True")
+    ok(isinstance(r["routeErrors"], list), "routeErrors 应为 list")
+    ok(isinstance(r["budget_exhausted"], bool), "budget_exhausted 应为 bool")
+    ok(isinstance(r["totalPages"], int), "totalPages 应为 int(清单总页数),实为 %r" % (r["totalPages"],))
+    ok(r["queries"] and len(r["queries"]) >= 1, "queries 应反映实际路数")
+    ok(len(r["queries"]) <= 7, "路数 %d 超过 maxRoutes=7" % len(r["queries"]))
+    ok(r["scanNote"], "多路清单应带 scanNote")
+    for i, it in enumerate(r["results"]):
+        name = "results[%d]" % i
+        kk = keys_of(it, name)
+        check_subset(kk, RESULT_BASE_KEYS - {"views", "snippet"}, name)
+        check_no_extra(kk, RESULT_ALLOWED_KEYS, name)
+        ok("contentText" not in kk, "%s 不得返回 contentText(清单只给标题级信息)" % name)
+        ok(isinstance(it["hitRoutes"], int) and it["hitRoutes"] >= 1,
+           "%s.hitRoutes 应为 ≥1 的整数,实为 %r" % (name, it.get("hitRoutes")))
+        ok(isinstance(it["routes"], list) and it["routes"],
+           "%s.routes 应为非空 list" % name)
+        ok(len(it["routes"]) == it["hitRoutes"],
+           "%s.routes 长度(%d)应等于 hitRoutes(%d)" % (name, len(it["routes"]), it["hitRoutes"]))
+        ok(all(isinstance(x, int) and x >= 1 for x in it["routes"]),
+           "%s.routes 元素应为 ≥1 的整数" % name)
+
+
+@case("online: 清单排序单调 —— hitRoutes 降序(实证排序主键)", online=True)
+def t_search_manifest_order():
+    r = core.search(QUERY, product_id=93, page=1, page_size=30)
+    hits = [x["hitRoutes"] for x in r["results"]]
+    ok(hits == sorted(hits, reverse=True),
+       "清单未按 hitRoutes 降序排列: %r" % (hits,))
+
+
+@case("online: 清单分页是清单口径 —— 每路上游固定 10 条,page_size 切清单", online=True)
+def t_search_manifest_paging():
+    # 用稳定产出多路的探针词:`信用额度控制` 去重后只剩 1 路(原句路与产品路同词),
+    # 清单天然只有 10 条,深页无意义。`BOM 分母变平方` 稳定出 6 路,清单足够深。
+    probe = "BOM 分母变平方"
+    r1 = core.search(probe, product_id=93, page=1, page_size=5)
+    ok(len(r1["results"]) <= 5, "page_size=5 应 ≤5 条,实为 %d" % len(r1["results"]))
+    ok(len(r1["queries"]) >= 2, "本用例需要多路输入(实测该探针词 ≥2 路),实为 %d 路"
+       % len(r1["queries"]))
+    r2 = core.search(probe, product_id=93, page=2, page_size=5)
+    ids1 = [x["id"] for x in r1["results"]]
+    ids2 = [x["id"] for x in r2["results"]]
+    ok(not (set(ids1) & set(ids2)),
+       "清单第 1/2 页出现重复条目: %r" % (sorted(set(ids1) & set(ids2)),))
+
+
+@case("online: routeErrors 契约 —— 失败路被记录、其余路结果仍返回", online=True)
+def t_route_errors_recorded():
+    """注入单路上游故障,断言:该路被记录进 routeErrors,且**其余路结果照常返回**。
+
+    注入点选在 `_search_upstream`(每路检索的唯一出口),用 monkeypatch 让第 1 路抛
+    UpstreamError(HTTP 200 带 errorCode 的形态)。这是本票的核心风险点:若不暴露失败路,
+    调用方会把"某路被上游拒绝"读成"官方没这类文档"。
+    """
+    cp = _impl()
+    real = cp._search_upstream
+    state = {"n": 0}
+
+    def fake(text, product_id, page, page_size, global_, sorts_type, type_, budget=None, rate=None):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise core.UpstreamError(409, "text too long(injected)")
+        return real(text, product_id, page, page_size, global_, sorts_type, type_, budget, rate)
+
+    # 探针词必须稳定产出 ≥2 路,否则"其余路"不存在(单路时首路即全部)
+    probe = "BOM 分母变平方"
+    cp._search_upstream = fake
+    try:
+        r = core.search(probe, product_id=93, page=1, page_size=10)
+    finally:
+        cp._search_upstream = real
+    ok(r["ok"] is True, "单路失败不应让整轮失败")
+    ok(len(r["queries"]) >= 2, "本用例需要多路输入(实测该探针词 ≥2 路)")
+    ok(len(r["routeErrors"]) == 1, "应记录 1 条 routeErrors,实为 %d" % len(r["routeErrors"]))
+    e = r["routeErrors"][0]
+    ok(e.get("route") == 1, "失败路序号应为 1,实为 %r" % (e.get("route"),))
+    ok(e.get("error") == "upstream_error", "error 类型应为 upstream_error,实为 %r" % (e.get("error"),))
+    ok(e.get("code") == 409, "应保留上游 errorCode,实为 %r" % (e.get("code"),))
+    ok(e.get("terms"), "routeErrors 应带该路检索词,便于定位")
+    ok(r["results"], "其余路的结果仍应返回,实为空清单")
+    ok("routeErrors" in r["scanNote"] or "失败" in r["scanNote"], "scanNote 应提示存在失败路")
+
+
+@case("online: 预算耗尽 —— budget_exhausted=true 且 scanNote 反映实际完成路数", online=True)
+def t_budget_exhausted_search():
+    """多路下预算不足:断言耗尽被置位,且 scanNote 写明'实际完成 N 路 / 计划 M 路'。
+
+    同时断言**没有静默**:调用方能从 scanNote 读出清单不完整。
+
+    budget 取值依据:`BOM 分母变平方` 实测 6 路,每路 1 页 = 6 次基础请求。
+    budget=2 只够跑完 1 路、第 2 路缺口,必然触发耗尽(旧断言用 budget=1,
+    单路查询时恰好跑完、不会耗尽——那是测试假设错,不是产品缺陷)。
+    """
+    probe = "BOM 分母变平方"
+    r = core.search(probe, product_id=93, budget=2, page=1, page_size=10)
+    ok(len(r["queries"]) >= 3, "本用例需要 ≥3 路的输入(实测该探针词 6 路),实为 %d 路"
+       % len(r["queries"]))
+    ok(r["budget_exhausted"] is True, "budget=2 且 ≥3 路应置 budget_exhausted=true")
+    ok("实际完成" in r["scanNote"], "scanNote 应写明实际完成路数,实为 %r" % (r["scanNote"],))
+    ok("计划" in r["scanNote"], "scanNote 应写明计划路数,实为 %r" % (r["scanNote"],))
+    ok(r["stats"]["upstreamCalls"] <= 2,
+       "预算硬上限被击穿: budget=2 实际发出 %r 次请求" % (r["stats"]["upstreamCalls"],))
+    ok(r["ok"] is True, "预算耗尽仍应返回 ok:true(不是异常)")
+    # budget=0:零上游请求,清单必空且不崩
+    r0 = core.search(probe, product_id=93, budget=0, page=1, page_size=10)
+    ok(r0["ok"] is True, "budget=0 应优雅返回")
+    ok(r0["results"] == [], "budget=0 不应产出清单,实为 %d 条" % len(r0["results"]))
+    ok(r0["stats"]["upstreamCalls"] == 0, "budget=0 却发生了上游请求")
+
+
+@case("online: 固定实证 —— 「应用为禁用状态[网关]」/93 必须召回 646787188905978624", online=True)
+def t_gold_error_code_case():
+    """**本票存在的唯一理由**:报错原文检索时,目标文档必须出现在清单里。
+
+    背景(设计定稿实测):融合 RRF 把《金蝶AIOpenAPI错误码说明》压到第 8 位、
+    落在 ask --topk 4 之外;而它恰是"单路精确命中"的典型(词法鸿沟:用户拿的是
+    上游报错原文,官方文档标题是产品术语)。清单化后按命中路数排序,该文档不再被
+    "多路都提到的泛文"淹没,必须可见。
+    """
+    gold = "646787188905978624"
+    r = core.search("应用为禁用状态[网关]", product_id=93, page=1, page_size=30)
+    ok(r["results"], "实证用例召回为零,清单化失去意义")
+    ids = [x["id"] for x in r["results"]]
+    ok(gold in ids,
+       "目标文档《金蝶AIOpenAPI错误码说明》(id %s) 未出现在清单前 30 条中;"
+       "实得 id=%r" % (gold, ids))
+    hit = next(x for x in r["results"] if x["id"] == gold)
+    ok(hit["title"], "目标文档命中但标题为空(清单核心交付物是标题)")
+    ok("错误码" in (hit["title"] or ""), "目标文档标题异常: %r" % (hit["title"],))
+
+
+@case("online: kd search 进程级 —— --routes 与清单字段", online=True)
+def t_cli_search_manifest():
+    code, d, _ = cli("search", "应用为禁用状态[网关]", "--product", "93", "--size", "30")
+    ok(code == 0, "kd search 退出码 %r" % code)
+    ok(d is not None, "kd search stdout 不是合法 JSON")
+    check_subset(keys_of(d, "cli search"), SEARCH_KEYS, "cli search")
+    ok(all("hitRoutes" in x for x in d["results"]), "CLI 清单条目应带 hitRoutes")
+    # --routes 1:退化为单路,路数必为 1
+    time.sleep(1.2)
+    code, d1, _ = cli("search", "信用额度控制", "--product", "93", "--routes", "1", "--size", "5")
+    ok(code == 0, "kd search --routes 1 退出码 %r" % code)
+    ok(len(d1["queries"]) == 1, "--routes 1 应只跑 1 路,实为 %d 路" % len(d1["queries"]))
+    ok(d1["stats"]["upstreamCalls"] == 1,
+       "--routes 1 且无 type_ 过滤应恰好 1 次上游请求,实为 %r" % (d1["stats"]["upstreamCalls"],))
 
 
 # ---------------------------------------------------------------- 执行器

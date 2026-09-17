@@ -86,7 +86,7 @@ def _guard(fn):
 
 def cmd_search(a):
     _out(_guard(lambda: core.search(a.text, product_id=a.product, page=a.page, page_size=a.size,
-                                    global_=a.global_, type_=a.type)))
+                                    global_=a.global_, type_=a.type, routes=a.routes)))
 
 
 def cmd_read(a):
@@ -156,32 +156,42 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="kd",
         description="金蝶官方知识 CLI(匿名免费:零账号/零点数/零模型)。AI-first:默认输出 JSON,"
-                    "stdout=数据 stderr=进度;kd ask 是唯一常规入口(内置多路关键词拆解+预算),"
-                    "search/read 是手动细粒度调试命令;本套件只产资料包、不合成回答(ADR-0008)——"
-                    "调用方 agent 拿资料包按 docs/ANSWER-SPEC.md 自己合成。",
+                    "stdout=数据 stderr=进度;kd search 是常规入口(多路拆词+只出标题清单,"
+                    "选出候选后再 kd read 取全文),kd ask 是一站式资料包(多路+深读,次要入口);"
+                    "本套件只产资料包/清单、不合成回答(ADR-0008)——"
+                    "调用方 agent 拿清单按 docs/ANSWER-SPEC.md 自己合成。",
         epilog='示例:\n'
-               '  kd ask "BOM分母变平方" --topk 4  # 常规问题一律用它:内置多路关键词拆解,一站式资料包\n'
-               '  kd ask --kw "信用额度" --kw "应收单 信用"  # 显式关键词(跳过自动拆解)\n'
-               '  kd search "信用额度控制" --product 93 --type answer  # 手动细粒度调试命令\n'
-               '  kd read 402990431979506944                    # 读全文(kind 照抄 search 结果的 type)\n'
-               '  kd health                                     # 内核自检(库模式,无服务)',
+               '  kd search "应用为禁用状态[网关]" --product 93  # 常规检索:多路拆词只出清单,带 hitRoutes\n'
+               '  kd read 402990431979506944                     # 从清单挑出 id 再读全文(kind 照抄 type)\n'
+               '  kd ask "BOM分母变平方" --topk 4                 # 一站式资料包(次要入口:含深读、开箱即用)\n'
+               '  kd ask --kw "信用额度" --kw "应收单 信用"        # 显式关键词(跳过自动拆解)\n'
+               '  kd health                                      # 内核自检(库模式,无服务)',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version="kd %s(library mode)" % _VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("search", help="手动细粒度调试命令:检索知识库(常规问题请用 kd ask;三种实体全返回)",
-                       epilog='示例: kd search "信用额度控制" --product 93 --type answer',
+    s = sub.add_parser("search", help="常规入口:多路拆词检索,只出标题清单"
+                                     "(每路 pageSize=10,按命中路数排序;要全文再用 kd read)",
+                       epilog='示例:\n'
+                              '  kd search "应用为禁用状态[网关]" --product 93   # 常规检索:清单带 hitRoutes\n'
+                              '  kd search "信用额度控制" --type answer          # 类型过滤(每路各带,独立跨页扫描)\n'
+                              '  kd search "信用额度控制" --routes 1             # 退化为单路精确(上游原生序)\n'
+                              '  kd read 402990431979506944                      # 从清单里挑出的 id 再读全文',
                        formatter_class=argparse.RawDescriptionHelpFormatter)
     s.add_argument("text", help="关键词(具体功能名/业务名词/报错词)")
     s.add_argument("--product", type=int, default=93, help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤")
     s.add_argument("--type", choices=list(_VALID_TYPES), default=None, help="按实体类型过滤")
-    s.add_argument("--page", type=int, default=1)
-    s.add_argument("--size", type=int, default=10, help="每页条数(≤50)")
+    s.add_argument("--page", type=int, default=1,
+                   help="清单分页页码(作用于多路去重排序后的清单,非上游分页)")
+    s.add_argument("--size", type=int, default=10,
+                   help="清单每页条数(作用于清单,非上游分页;近上游默认 10)")
+    s.add_argument("--routes", type=int, default=None,
+                   help="最多用几路拆词(默认取 maxRoutes=7;1=单路精确)")
     s.add_argument("--global", dest="global_", action="store_true", help="跨全部产品")
     s.set_defaults(fn=cmd_search)
 
-    s = sub.add_parser("read", help="手动细粒度调试命令:读全文(常规问题请用 kd ask);"
-                                    "--kind 照抄 search 结果的 type 字段"
+    s = sub.add_parser("read", help="取全文:先用 kd search 出清单,再 kd read 挑中的条目"
+                                    ";--kind 照抄清单里的 type 字段"
                                     "(knowledge=官方文档/answer=问答帖全文/article=社区文章)",
                        epilog='示例:\n'
                               '  kd read 402990431979506944                    # knowledge 条目 → 官方文档全文\n'
@@ -196,8 +206,9 @@ def build_parser():
                         "当前无可用入口——执行时报错而非静默忽略)")
     s.set_defaults(fn=cmd_read)
 
-    s = sub.add_parser("ask", help="唯一常规入口:一站式资料包(内置多路关键词拆解 ≤7 路 RRF"
-                                   "+深读 topK 全文+上游预算+召回信号摘要,供调用方 agent 合成回答)",
+    s = sub.add_parser("ask", help="次要入口:一站式资料包(多路关键词拆解 ≤7 路 RRF"
+                                   "+深读 topK 全文+上游预算+召回信号摘要,供调用方 agent 合成回答)"
+                                   ";常规检索请用 kd search 出清单",
                        epilog='示例: kd ask "信用额度怎么控制" --topk 4 / '
                               'kd ask --kw "信用额度" --kw "应收单 信用"',
                        formatter_class=argparse.RawDescriptionHelpFormatter)

@@ -133,6 +133,23 @@ def _cfg_budget_max():
     return routes + topk * 3
 
 
+def _cfg_budget_search_max():
+    """search 的独立预算档:**与 ask 不同**,二者共用 _Budget 类但上限各自取默认。
+
+    ask 的 64 含深读请求,语义是"一次完整资料包";search 只做清单,
+    7 路 × 1 页 = 7 次基础请求,余量留给 type_ 扫描与重试,故默认 24。
+    """
+    v = os.environ.get("KSEARCH_SEARCH_BUDGET")
+    if v and str(v).isdigit():
+        return int(v)
+    cfg = _route_cfg()
+    b = (cfg.get("budget") or {}).get("maxUpstreamPerSearch")
+    if b:
+        return int(b)
+    # 兜底:7 路基础 + type_ 扫描余量(仅配置缺失时生效,有意保守)
+    return int(cfg.get("maxRoutes") or 7) * 2 + 10
+
+
 class _Budget:
     """单次 ask 的上游请求硬上限(默认 64,可配置)。只对真实上游调用计数——    领取点都在 _get_json 入口,本地缓存命中不经 _get_json,天然不计。
 
@@ -407,6 +424,30 @@ def _rrf_fuse(lists):
 
 
 # ---------- 检索:三种实体全返回 ----------
+def _title_of(*cands):
+    """标题解析:按优先级取第一个**非空**候选,逐个 html2text 后判空。
+
+    为什么不能写成 `html2text(a or b or "")`:那些候选里混着"" 与 None,
+    而 html2text 对纯高亮标签串(如上游只回 `<em>禁用</em>` 的边界)会产出非空结果、
+    对真正缺失的字段才产出""。若只用 `a or b` 短路,一个"存在但为空串"的高优先候选
+    会挡住后面真正有货的候选;反之若先 html2text 再 or,`<em>x</em>` 这种候选又能
+    正确胜出。此处显式逐级判空,把降级链写死成可预期顺序,避免 silent None。
+
+    上游 answer 条目的标题在 `highlight["question.title"]`(**含点号的同层键**,
+    不是嵌套对象 `highlight["question"]["title"]`)——实测 2026-09-17 该键存在且非空;
+    但 `question` 对象里**没有** title 字段(实测其键集里只有 description 等),
+    故原第二级兜底 `q.get("title")` 恒为空,是死分支。保留它作为形状防御,
+    同时补上 `x["title"]`——上游某些时期会把标题平铺在条目顶层。
+    """
+    for c in cands:
+        if c is None:
+            continue
+        t = html2text(c).strip()
+        if t:
+            return t
+    return None
+
+
 def _norm_item(x, et):
     hl = x.get("highlight") or {}
     classes = [c.get("name") for c in (x.get("classifies") or []) if c.get("name")]
@@ -414,7 +455,7 @@ def _norm_item(x, et):
         kid = str(x.get("knowledgeId") or x.get("id") or "")
         return {"type": "knowledge", "id": kid,
                 "url": _URL_OF["knowledge"] % kid if kid else None,
-                "title": html2text(hl.get("title") or x.get("title") or "") or None,
+                "title": _title_of(hl.get("title"), x.get("title")),
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "products": classes[:3],
                 "views": x.get("views"), "useful": x.get("useful"),
@@ -424,7 +465,9 @@ def _norm_item(x, et):
         qid = str(x.get("questionId") or q.get("id") or "")
         return {"type": "answer", "id": str(x.get("id") or ""), "questionId": qid,
                 "url": _URL_OF["answer"] % qid if qid else None,
-                "title": html2text(hl.get("question.title") or q.get("title") or "") or None,
+                # 点号同层键优先;q["title"] 为形状防御(实测该字段不存在);
+                # x["title"] 兜住"标题被平铺到条目顶层"的上游变体。
+                "title": _title_of(hl.get("question.title"), q.get("title"), x.get("title")),
                 "questionBody": html2text(q.get("description") or "")[:500] or None,
                 "snippet": html2text(hl.get("description") or x.get("summary") or "")[:400] or None,
                 "adopted": _is_true(x.get("isAdopt")),
@@ -436,7 +479,7 @@ def _norm_item(x, et):
         arid = str(x.get("id") or "")
         return {"type": "article", "id": arid,
                 "url": _URL_OF["article"] % arid if arid else None,
-                "title": html2text(hl.get("title") or x.get("title") or "") or None,
+                "title": _title_of(hl.get("title"), x.get("title")),
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "products": classes[:3],
                 "views": x.get("views"), "supports": x.get("supports"),
@@ -522,6 +565,165 @@ def _knowledge_search(text, product_id=None, page=1, page_size=10, global_=False
             "scanNote": "v4管线:上游深扫描%d条×%d路%s,RRF(k=%d)+信号重排" % (
                 up_size, len(queries), "+同义词变体" if len(queries) > 1 else "", RRF_K),
             "queries": queries}
+
+
+# ---------- 多路清单编排(search 执行链) ----------
+def _route_search_once(text, product_id, type_, max_scan_pages, budget, rate, sorts_type=1,
+                       page_size=10, want=10):
+    """单路检索:每路按 pageSize=10 向上游取,直到凑够 `want` 条或触到扫描上限。
+
+    返回 (items, total, pages_scanned)。上游错误原样上传,由编排层分档处理
+    (单路失败不拖垮整轮)。
+
+    为什么 `want` 会大于 page_size:清单是"每路 10 条去重排序"的产物,总长度最坏
+    只有 路数×10。若清单分页要第 2 页(page*page_size > 10),单靠每路 1 页根本
+    凑不出那一条清单——切出来会是空页。故这里按 `want = max(10, page*page_size)`
+    向上游多翻页,**只在调用方确实要深页时才多花请求**,浅页(默认 page=1)行为不变。
+
+    为什么 type_ 每路都带:它是调用方的显式意图("我只要 knowledge"),不是路由策略。
+    只在某一路扫会造成"同一意图下不同路召回能力不同"——正是本轮要消除的不可解释行为。
+    代价是 type_+多路时最坏 routes×max_scan_pages 次请求,由预算硬卡。
+    """
+    items, seen = [], set()
+    total, pages_scanned = 0, 0
+
+    def collect(dd):
+        for x in dd.get("content") or []:
+            et = (x.get("entity-type") or "").lower()
+            if type_ and et != str(type_).lower():
+                continue
+            key = (et, str(x.get("id") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            n = _norm_item(x, et)
+            if n:
+                items.append(n)
+
+    first = _search_upstream(text, product_id, 1, page_size, False, sorts_type, type_,
+                             budget, rate)
+    pages_scanned += 1
+    total = max(total, first.get("totalElements") or 0)
+    total_pages = first.get("totalPages")
+    collect(first)
+
+    pg = 2
+    # 扫描补齐:type_ 过滤把混排结果里的目标类型抽出来;循环与 _knowledge_search 同纪律
+    # (max_scan_pages 上限),但**每路独立计数**——路间不共享进度。
+    # want_effective 是"本条路还要凑多少条"的下界:type_ 下按该类型的可见条数收敛,
+    # 非 type_ 下就是页面上游给多少算多少。
+    while pg <= max_scan_pages and pg <= (total_pages or 1):
+        if len(items) >= want:
+            break
+        dd = _search_upstream(text, product_id, pg, page_size, False, sorts_type, type_,
+                              budget, rate)
+        pages_scanned += 1
+        collect(dd)
+        pg += 1
+    return items, total, pages_scanned
+
+
+def _search_manifest(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1,
+                     type_=None, routes=None, budget=None, rate=None):
+    """多路拆词 → 每路一次上游检索 → 去重 → 按命中路数排 → 清单分页。
+
+    已定设计(勿重开):多路+只出清单 / 丢弃 RRF / 每路 10 条 / 默认开启不设开关。
+    返回结构与旧 search 兼容(增量字段),故:
+      page/page_size 语义变更 —— 二者的作用对象从"上游分页"改为**清单分页**:
+      每路上游固定 pageSize=10,多路结果去重排序得到清单,再按
+      (page-1)*page_size : page*page_size 切片。上游分页在多路下本就没有意义
+      ("第 2 页"是哪一路的第 2 页?),只能对融合后的清单分页。
+    """
+    cfg = _route_cfg()
+    max_routes = int(cfg.get("maxRoutes") or 7)
+    plan = routes if routes is not None else max_routes
+    try:
+        plan = max(1, min(int(plan), max_routes))
+    except Exception:
+        raise InternalError("bad routes: %r(应为 1..%d 的整数)" % (routes, max_routes))
+    route_list, product_id = _plan_routes(text=text, product_id=product_id)
+    # 丢弃检索词完全相同的重复路:拆解器会让原句路与产品/上下文词路产出同一串词
+    # (实测:`信用额度控制` → raw:question 与 product 两路 terms 逐字相同),若不在此
+    # 去重就是对同一 query 发两次上游请求——既浪费预算,又会让该词条目的 hitRoutes
+    # 虚高为 2(它其实只被一路的检索意图覆盖,不是"两路都命中")。命中路数是排序主键,
+    # 注水会直接腐蚀排序。拆解规则本身不改,只在执行链收敛。
+    _deduped, _seen_terms = [], set()
+    for _r in route_list:
+        _t = str(_r.get("terms") or "")
+        if _t in _seen_terms:
+            continue
+        _seen_terms.add(_t)
+        _deduped.append(_r)
+    route_list = _deduped[:plan]
+
+    route_lists, route_errors = [], []
+    total, planned, done = 0, len(route_list), 0
+    # 每条路要凑够的条数下界:清单切片的下标上界是 page*page_size,清单由各路条目
+    # 并集构成,故单路至少要能提供到这个深度,否则深页会切出空结果。
+    # 取 max(10, ...) 保证默认浅页仍是"每路 10 条"(已定设计④)不变。
+    _per_route_want = max(10, int(page) * int(page_size))
+    for route_no, r in enumerate(route_list, 1):
+        # 提前止损:余量见底就不必再发请求。硬闸仍在 _get_json 的 acquire()。
+        if budget is not None and budget.remaining() == 0:
+            budget.mark_exhausted()
+            break
+        try:
+            items, t, _pages = _route_search_once(
+                r["terms"], r.get("productIds"), type_, 5, budget, rate,
+                sorts_type=int(r.get("sortsType") or 1), page_size=10,
+                want=_per_route_want)
+        except _BudgetExhausted:
+            budget.mark_exhausted()
+            break
+        except UpstreamError as e:
+            # 上游业务错误(HTTP 200 但 body 带 errorCode)。必须显式暴露给调用方:
+            # 否则"某路被上游拒绝"会被读成"官方没这类文档"——这是 ask 注释里
+            # 已经警告过的错误,清单路径尤其不能重演(清单是唯一交付物)。
+            log("UPSTREAM_ERR:", "route=%s code=%s msg=%s" % (r.get("kind"), e.code, e.message))
+            route_errors.append({"route": route_no, "kind": r.get("kind"),
+                                 "terms": r.get("terms"),
+                                 "error": "upstream_error", "code": e.code,
+                                 "message": e.message})
+            continue
+        except Exception as e:
+            log("ROUTE_ERR:", "route=%s terms=%s %s: %s"
+                % (r.get("kind"), str(r.get("terms"))[:40], type(e).__name__, str(e)[:120]))
+            route_errors.append({"route": route_no, "kind": r.get("kind"),
+                                 "terms": r.get("terms"), "error": type(e).__name__,
+                                 "code": None, "message": str(e)[:200]})
+            continue
+        done += 1
+        total = max(total, t)
+        route_lists.append((route_no, items))
+
+    keys, route_hits, _first = _manifest_fuse(route_lists)
+    by_key = {}
+    for _no, items in route_lists:
+        for n in items:
+            by_key.setdefault(_manifest_key(n), n)
+    manifest = [_manifest_project(by_key[k], route_hits[k]) for k in keys]
+    clipped = manifest[(page - 1) * page_size: page * page_size]
+
+    _used, _max, _exhausted = budget.snapshot() if budget else (None, None, False)
+    budget_exhausted = bool(_exhausted)
+    scan_parts = ["多路清单:%d/%d 路完成,每路 pageSize=10,去重后 %d 条"
+                  % (done, planned, len(manifest))]
+    if type_:
+        scan_parts.append("type=%s 过滤每路各带、跨页扫描独立计数(≤5 页/路)" % type_)
+    if budget_exhausted:
+        scan_parts.append("预算耗尽,实际完成 %d 路 / 计划 %d 路" % (done, planned))
+    if route_errors:
+        scan_parts.append("失败路 %d 条(见 routeErrors)" % len(route_errors))
+    if not manifest:
+        scan_parts.append("部分路失败,召回不完整" if route_errors else "无匹配")
+    total_pages = (len(manifest) + page_size - 1) // page_size if page_size else 0
+    return {"ok": True, "text": text, "total": total,
+            "queries": [r["terms"] for r in route_list],
+            "page": page, "pageSize": page_size, "totalPages": total_pages,
+            "results": clipped,
+            "routeErrors": route_errors,
+            "budget_exhausted": budget_exhausted,
+            "scanNote": ";".join(scan_parts)}
 
 
 # ---------- 详情:知识 / 问答 / 文章 ----------
@@ -798,6 +1000,80 @@ def _fused_key(x):
         else str(x.get("type", "?")) + ":" + str(x.get("id"))
 
 
+# ---------- 多路清单:去重键 / 命中路数排序(fan-out 后替代 RRF) ----------
+def _manifest_key(n):
+    """多路清单的去重键:`f"{type}:{id}"`。
+
+    与 `_fused_key` / `_rrf_fuse` 的 `answer:questionId` **有意不同**,且本函数
+    只服务 search 的多路清单,不参与 ask 的融合路径(ask 本轮一行不改)。
+
+    为什么 answer 用回答 id 而不是 questionId:清单的单位是**条目**,而回答本身
+    就是独立条目——同一个问题帖可以有采纳回答 + 多条普通回答,它们语义不同
+    (采纳的是解、普通的是旁证),必须在清单里各自成条、可分别筛。`read("answer", …)`
+    只认 questionId 是**读取路径**的约束(帖子级详情),与**列表路径**的条目粒度
+    本来就该分开;两者混用一个键,会让同一帖的多条回答在清单里被静默合并成一条
+    (丢掉其余回答),这正是 up 上游返回结构里 answer 同时带 `id` 与 `questionId`
+    两个 id 空间所暴露的口径问题。questionId 仅进展示字段。
+    """
+    return "%s:%s" % (n.get("type") or "?", n.get("id") or "")
+
+
+def _manifest_rank(route_hits, route_index):
+    """多路清单排序键:命中路数降序 → 同路数按上游原生序。
+
+    纯函数,入参是构造数据,便于离线断言(不打上游):
+      route_hits   {key: {路序号,...}} —— 该条目被哪几路命中
+      route_index  {key: (首次出现的路序号, 该路内名次)} —— 上游原生序的载体
+
+    为什么不用 `_rrf_fuse`:RRF 的 `1/(60+名次)` 是**有损压缩**,把"哪一路命中"
+    压成一个分数再求和,于是"多路各排第 20 的泛文"(4×1/80=0.05)必然赢过
+    "单路精确命中的专文"(1/61≈0.0164)。融合在消灭调用方最需要的信息,
+    且决策不可追溯。此处只数路数、不加权,把"哪一路命中"从被抹掉的中间量
+    提升为排序主键。
+    """
+    def key(k):
+        first_route, first_pos = route_index.get(k, (99, 99))
+        return (-len(route_hits.get(k) or ()), first_route, first_pos)
+    return key
+
+
+def _manifest_fuse(route_lists):
+    """多路结果 → 去重后的清单条目(带 hitRoutes / routes)。
+
+    route_lists 是 [(路序号, [规范化条目, …]), …],顺序即路的执行顺序。
+    返回 (entries, route_hits):
+      entries    按"命中路数降序 → 上游原生序"排列的清单
+      route_hits {去重键: {路序号,…}}
+    不做任何加权、不引入分数——排序信息全部来自路数与上游自身的原生序。
+    """
+    route_hits, first_seen, order = {}, {}, []
+    for route_no, items in route_lists:
+        for pos, n in enumerate(items, 1):
+            if not n:
+                continue
+            k = _manifest_key(n)
+            if k not in route_hits:
+                route_hits[k] = set()
+                first_seen[k] = (route_no, pos)
+                order.append(k)
+            route_hits[k].add(route_no)
+    keys = sorted(order, key=_manifest_rank(route_hits, first_seen))
+    return keys, route_hits, first_seen
+
+
+def _manifest_project(n, route_nos):
+    """清单条目的对外形态:只给标题级信息,不返回 contentText。
+
+    调用方要全文走 `read(id, kind=type)`——"筛选"与"深读"两步解耦、各自可重试。
+    没有 contentText 就不存在"替调用方决定读哪篇"这件事。
+    """
+    return {"type": n.get("type"), "id": n.get("id"), "title": n.get("title"),
+            "hitRoutes": len(route_nos), "routes": sorted(route_nos),
+            "questionId": n.get("questionId"), "url": n.get("url"),
+            "snippet": n.get("snippet"), "products": n.get("products") or [],
+            "views": n.get("views"), "updatedAt": n.get("updatedAt")}
+
+
 def _select_top(ranked, top_k):
     """融合排名选 topK 深读;并保证资料包两种来源覆盖(knowledge 补根因/answer 对齐症状):
     若选出的全是单一类型且候选池另一类型存在,用融合排名最低的席位换另一类型最佳候选。"""
@@ -936,30 +1212,51 @@ def _synthesis_brief(pack):
 
 # ================= 公开面:ask / search / read =================
 def search(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1,
-           type_=None, rerank=None, budget=None, rate=None):
-    """检索原语:三种实体全返回(知识/问答/文章),type 字段区分。
+           type_=None, rerank=None, budget=None, rate=None, routes=None):
+    """常规入口:多路拆词检索,只出标题清单(不返回正文)。
+
+    **与旧版的行为差异(破坏性)**:本函数已从"单路精确检索"升级为"多路拆词 + 清单",
+    `page` / `page_size` 的语义随之改变——它们现在作用于**融合后的清单**,不再是上游分页。
+    每路上游固定 `pageSize=10`,多路结果去重后按"命中路数"降序排列,再切第 page 页。
+    要旧的单路精确语义,用 `routes=1`(排序退化为上游原生序)。
 
     text       检索词(str)。超过上游 100 原始字符 → raise QueryTooLong(不静默截断)。
     product_id 93=星空旗舰版 / 87=苍穹 / 1=企业版标准版;None 或 0 = 不过滤(省略参数)。
-    page/page_size/sorts_type/global_ 直通上游。
-    type_      可选过滤 knowledge|answer|article(过滤时跨页扫描补齐该类型)。
-    rerank     信号重排(opt-in 实验,默认取 KSEARCH_RERANK,默认关)。
-    budget     上游请求硬上限(int);rate 限速档名(默认 interactive)。
-    返回:上游条目 + stats{upstreamCalls,elapsedMs}。非法入参 raise InternalError。
+    routes     最多用几路(默认取 query_routes.json 的 maxRoutes=7)。**没有 --multi 开关**:
+               多路是默认行为,收敛参数而不是保留两套实现。
+    page/page_size  清单分页(非上游分页;见上)。
+    type_      可选过滤 knowledge|answer|article。每路都带该过滤,且每路独立跨页扫描。
+    rerank     保留参数;多路清单路径下不再生效(RRF 已从检索链路移除)。
+    budget     上游请求硬上限(int);默认取 KSEARCH_SEARCH_BUDGET /
+               query_routes.json 的 budget.maxUpstreamPerSearch(24)。
+    rate       限速档名(默认 interactive)。
+
+    返回:`results[]` 每项含 type/id/title/hitRoutes/routes[](命中来自哪几路),
+    **不含 contentText**——要全文走 `read(id, kind=type)`。另有 routeErrors[](哪几路
+    失败,用于区分"被上游拒绝"与"官方没这类文档")、budget_exhausted、scanNote、stats。
+    非法入参 raise InternalError。
     """
     if not str(text or "").strip():
         raise InternalError("text required: 传具体功能名/业务名词/报错词")
     if type_ and str(type_).lower() not in ENTITY_KINDS:
         raise InternalError("bad type: %s(%s)" % (type_, "|".join(ENTITY_KINDS)))
     clamp_query(str(text), UPSTREAM_TEXT_MAX, strict=True)
+    # budget 入参语义与 ask 一致:None=取默认档;显式传入(含 0)以其为准。
+    bv = budget if budget is not None else _cfg_budget_search_max()
+    if not (isinstance(bv, int) and not isinstance(bv, bool)) and \
+            not (isinstance(bv, str) and str(bv).isdigit()):
+        raise InternalError("bad budget: %r(应为非负整数)" % (budget,))
+    bv = _Budget(int(bv))
     n0, t0 = _up_now(), time.time()
-    res = _knowledge_search(text, product_id=product_id, page=int(page), page_size=int(page_size),
-                            global_=bool(global_), sorts_type=int(sorts_type), type_=type_,
-                            rerank=RERANK_DEFAULT if rerank is None else bool(rerank),
-                            budget=budget, rate=rate)
+    res = _search_manifest(text, product_id=product_id, page=int(page),
+                           page_size=int(page_size), global_=bool(global_),
+                           sorts_type=int(sorts_type), type_=type_, routes=routes,
+                           budget=bv, rate=rate)
     res["stats"] = {"upstreamCalls": _up_now() - n0,
                     "elapsedMs": round((time.time() - t0) * 1000, 1)}
-    log("SEARCH:", str(text)[:50], "| total", res.get("total"), "| returned", len(res.get("results") or []))
+    log("SEARCH:", str(text)[:50], "| routes", len(res.get("queries") or []),
+        "| total", res.get("total"), "| returned", len(res.get("results") or []),
+        "| upstream", res["stats"]["upstreamCalls"])
     return res
 
 

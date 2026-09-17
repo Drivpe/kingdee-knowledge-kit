@@ -49,7 +49,7 @@ SIGNATURE_BASELINE = {
     "ask": "(text=None, keywords=None, product_id=93, top_k=None, budget=None, "
            "rerank=None, refresh=False, rate=None)",
     "search": "(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1, "
-              "type_=None, rerank=None, budget=None, rate=None)",
+              "type_=None, rerank=None, budget=None, rate=None, routes=None)",
     "read": "(kind, oid, refresh=False, budget=None, rate=None)",
 }
 

@@ -3,11 +3,12 @@ name: kingdee-knowledge
 description: >-
   检索金蝶官方知识库(匿名免费:零账号/零点数/无限流)。当用户询问金蝶产品相关问题——
   金蝶云·星空/旗舰版、苍穹、星空企业版/标准版的配置方法、操作步骤、报错排查、字段/API 说明——时,
-  常规问题一律先 `kd ask`(内置原句路+多路关键词拆解,一站式带回资料包),
-  再由你按 ANSWER-SPEC 直接合成回答(默认**不开子代理**)。本套件零模型依赖,不合成回答,
-  也不在本地落盘缓存(去服务化后无本地语料可 rg)。
+  常规问题一律先 `kd search`(多路拆词、只出标题清单,你自己挑),
+  再 `kd read` 取全文,最后由你按 ANSWER-SPEC 直接合成回答(默认**不开子代理**)。
+  `kd ask` 仍在,但只是次要入口(一站式资料包,含深读)。
+  本套件零模型依赖,不合成回答,也不在本地落盘缓存(去服务化后无本地语料可 rg)。
 ---
-# 金蝶知识库检索(kingdee-knowledge)——kd CLI 流程(v6.2 ask-first + 合成在调用方)
+# 金蝶知识库检索(kingdee-knowledge)——kd CLI 流程(v6.3 search-first + 合成在调用方)
 
 金蝶官方知识检索内核(`kd.core`,可 import 的库)的命令行入口 `kd`,
 逆向自金蝶云社区公开后端,**纯匿名:零账号、零点数、无澄清、无对话限流**。
@@ -53,28 +54,36 @@ stderr/错误 JSON(带 hint),据此换调用方式,而不是静默改道 websear
 
 ## ⭐ 检索流程(三步,不要临场发挥)
 
-### 第 1 步:kd ask——常规问题一律此入口
+### 第 1 步:kd search——常规问题一律此入口(出清单,你挑)
 
-一站式资料包:内核内置**多路关键词拆解**(原句路+症状词路+字段/实体名词路+产品词路,≤7 路 RRF 融合,
-规则在包内 `kd/query_routes.json`)→ 并行多路搜索 → 深读 topK 全文;
-返回 `routes[]`(拆解明细)+ `sources[]`(每源 title/url/products/全文/chunks)+
-`effectiveProductId`(本次实际生效的产品过滤)+ `budget{max,used}`。
+多路拆词检索,**只出标题清单、不返回正文**:内核内置**多路关键词拆解**
+(原句路+症状词路+字段/实体名词路+产品词路,≤7 路,规则在包内 `kd/query_routes.json`)→
+每路各发一次上游检索(每路 10 条)→ 去重 → **按"命中路数"降序排**(同路数按上游原生序)。
 
 ```bash
-kd ask "BOM分母27000 MRP运算变成平方" --topk 4
-# --kw 可显式指定关键词(跳过自动拆解):kd ask --kw "BOM 分母" --kw "MRP 用量"
+kd search "应用为禁用状态[网关]" --product 93
+# → {total, queries[], results:[{type,id,title,hitRoutes,routes[],…}], routeErrors[], scanNote}
 ```
 
-- **检索词改写由 ask 内置多路承担,你不再需要临场编词路**:直接把用户的症状描述原样交给 ask,
-  内核负责跨越词汇鸿沟(如「分母变平方」↔文档命名的「生产单位数量」);
-- **原句路**(ADR-0009):内核会把**完整问句**作为一路参与融合(保席位、相关性排序)。
-  ⚠️ 上游对检索词有 **100 字符硬上限**,超限返回 `errorCode:409` 空壳 → 内核会**自动压到 100 字**,
-  但被截掉的往往是问句后半段的关键症状词。**长问句请自己先提炼**:把最独特的症状/字段/报错词
-  放在**前 100 字内**(如「分母显示27000 MRP运算变成27000平方」),比丢整段更有效;
-- 返回体里看 `routes[]` 理解内核拆了哪些路;`budget_exhausted:true` 表示上游预算耗尽,
-  先消化已获资料,不要立刻重跑;
-- sources 展示排序 answer 优先(症状近似度最高),knowledge 紧随(补根因解释)——两类都要看;
-- `synthesisBrief`(见下节)是**召回信号摘要**,先读它再决定要不要合成。
+- **每条带 `hitRoutes`(命中几路)+ `routes[]`(来自哪几路)**:这是内核给你的**决策依据**,
+  比任何融合评分都可解释——多路都命中的通常是泛文,只在原句路命中的往往是精确专文;
+- **报错原文直接搜**:用户拿上游报错码/症状描述来时,把原文原样交给 search(如
+  `应用为禁用状态[网关]`),内核的原句路负责跨词汇鸿沟召回官方文档;
+- **`routeErrors[]` 非空 = 部分路失败、召回不完整**:绝不要把"某路被上游拒绝"读成
+  "官方没这类文档",此时应重试或告知用户;
+- `budget_exhausted:true` 表示预算耗尽,清单不完整,先消化已获结果;
+- `--routes N` 控制最多用几路(默认 7);`--routes 1` 即单路精确检索。
+
+### 第 1.2 步:kd read——从清单挑出 id 再取全文
+
+清单只给标题,**要全文必须显式读**——这一步由你决定读哪几篇,内核不再替你挑:
+
+```bash
+kd read <id>                          # type=knowledge → 官方文档全文
+kd read <questionId> --kind answer    # type=answer → 问题+全部回答+追问链
+kd read <id> --kind article           # type=article → 社区文章全文
+# --kind 照抄清单里的 type 字段,零翻译
+```
 
 ### 第 1.5 步:合成(你的职责,不是 kd 的)
 
@@ -177,16 +186,37 @@ site:help.open.kingdee.com <功能名词>
 诚实边界:部分发版说明不在搜索索引内,搜不到≠不存在;不要因为第三跳也无果就断言「官方没有」,
 按 ANSWER-SPEC 写「现有资料未覆盖」。
 
-## 手动细粒度调试命令(search/read)
+## 次要入口:kd ask(一站式资料包)
 
-仅当需要精确控制(分页/类型过滤/指定单条深读)时手动使用,常规问题不要从 search 起步:
+需要**一次拿回全文**而不想自己挑时用它:多路拆解 + RRF 融合 + 深读 topK 全文,
+返回 `sources[]`(每源 title/url/products/全文/chunks)+ `synthesisBrief`(召回信号摘要)。
+
+```bash
+kd ask "BOM分母27000 MRP运算变成平方" --topk 4
+# --kw 可显式指定关键词(跳过自动拆解):kd ask --kw "BOM 分母" --kw "MRP 用量"
+```
+
+⚠️ **`ask` 的融合排序会在报错码场景上失手**(实测 `应用为禁用状态[网关]`:目标文档在
+`ask --topk 4` 落在第 8 位、读不到,而 `kd search` 清单里可见)。**报错排查、症状描述类问题优先用
+`kd search` 出清单自己挑**,`ask` 只在"确定想要一站式全文包"时用。
+
+- 返回体里看 `routes[]` 理解内核拆了哪些路;`budget_exhausted:true` 表示上游预算耗尽,
+  先消化已获资料,不要立刻重跑;
+- sources 展示排序 answer 优先(症状近似度最高),knowledge 紧随(补根因解释)——两类都要看;
+- `synthesisBrief` 是**召回信号摘要**,先读它再决定要不要合成。
+
+## 手动细粒度调试命令(search/read 的参数控制)
+
+`search`/`read` 已是常规入口(见「检索流程」),这里只列参数级控制:
 
 ```bash
 kd search "信用额度控制" --product 93 --size 10
-# → {"total","results":[{type,id,questionId?,title,snippet,adopted?,url,…}]}
-# --type knowledge|answer|article 可过滤;knowledge=官方文档(权威优先)
+# → {total,queries[],results:[{type,id,title,hitRoutes,routes[]}],routeErrors[],scanNote,stats}
+# --type knowledge|answer|article 可过滤(每路都带该过滤,各路独立跨页扫描)
+# --routes N 最多用几路(默认 7);--routes 1 = 单路精确检索
+# ⚠️ --page/--size 是**清单分页**(作用于多路去重排序后的清单,不是上游分页)
 # --product 93=星空旗舰版(默认)、87=苍穹、1=星空企业版/标准版、0=不过滤
-# ⚠️ --product 必须沿用本会话首次 ask 确定的路由,禁止变道 0(硬规则见下节)
+# ⚠️ --product 必须沿用本会话首次检索确定的路由,禁止变道 0(硬规则见下节)
 
 kd read <id>                          # type=knowledge → 官方文档全文
 kd read <questionId> --kind answer    # type=answer → 问题+全部回答+追问链
@@ -203,10 +233,12 @@ kd read <id> --kind article           # type=article → 社区文章全文
 
 ## 快捷方式
 
-- `kd ask "问题" --topk 4` —— **唯一常规入口**:原句路+多路关键词拆解+深读 topK 全文+`synthesisBrief` 一次带回
-- 拿到资料包后**自己合成**(默认不开子代理;规范见「第 1.5 步」)
+- `kd search "问题/报错原文"` —— **常规入口**:多路拆词+只出标题清单(带 hitRoutes),你挑完再读
+- `kd read <id> --kind <type>` —— 从清单取全文(kind 照抄清单里的 type)
+- `kd ask "问题" --topk 4` —— **次要入口**:一站式资料包(多路+RRF 融合+深读 topK+synthesisBrief);
+  报错码场景可能漏召回,优先用 search
+- 拿到内容后**自己合成**(默认不开子代理;规范见「第 1.5 步」)
 - `kd health` —— 内核自检(库模式:确认公开面与路由规则已加载,排查环境问题先跑它)
-- `kd search` / `kd read` —— 手动细粒度调试命令(常规问题不用)
 
 ## 内核或上游异常时
 
