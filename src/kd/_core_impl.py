@@ -704,11 +704,13 @@ def _plan_routes(text=None, keywords=None, product_id=None):
         return routes, product_id
     text = str(text or "")
     aliases = ((cfg.get("productAliases") or {}).get("alias") or {})
-    if not product_id:
-        for name, pid in aliases.items():
-            if str(name) in text:
-                product_id = pid
-                break
+    # 问句产品词优先于默认兜底:默认 93(旗舰版)是"用户没说时的兜底",
+    # 不是"覆盖用户所说"。问句里出现「苍穹」「企业版」等别名时,推导值覆盖默认,
+    # 否则默认 93 会让所有问句都被当成旗舰版问题(2026-09-17 定案)。
+    for name, pid in aliases.items():
+        if str(name) in text:
+            product_id = pid
+            break
     latin = []  # 扫描提取(中英混写无空格:"MRP运算""分母显示27000"里的 MRP/27000 也要拿到)
     for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9.%/_:-]*", text):
         if t not in latin:
@@ -979,14 +981,16 @@ def read(kind, oid, refresh=False, budget=None, rate=None):
     return d
 
 
-def ask(text=None, keywords=None, product_id=None, top_k=None, budget=None,
+def ask(text=None, keywords=None, product_id=93, top_k=None, budget=None,
         rerank=None, refresh=False, rate=None):
     """一站式资料包:多路关键词拆解 → RRF 融合 → 深读 topK 全文 → 附相关 chunk。
 
     text        自然语言问题(与 keywords 二选一)。超 100 原始字符 raise QueryTooLong
                 (上游是硬闸;压回值在异常的 clamped 字段里,是否重试由调用方决定)。
     keywords    显式关键词列表(跳过自动拆解,每词一路)。
-    product_id  产品过滤;未指定时按问句里的产品词自动推导(所有路统一携带)。
+    product_id  产品过滤,默认 93(星空旗舰版)。**问句里的产品词优先于本默认**:
+                问句含「苍穹」「企业版」等别名时按别名推导并覆盖 93;要真正的
+                "不过滤"必须显式传 0(默认 93 已使"不带参数"不再等于不过滤)。
     top_k       深读条数 1-8(默认取 query_routes.json 的 deepRead.topK=4)。
     budget      上游请求硬上限(int);默认取 KSEARCH_ASK_BUDGET / query_routes.json(64)。
     rerank      opt-in 信号重排;默认取 KSEARCH_RERANK(默认关)。

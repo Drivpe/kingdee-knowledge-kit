@@ -46,7 +46,7 @@ PUBLIC_API = ["ask", "search", "read", "QueryTooLong", "UpstreamError", "Interna
 
 # 公开函数签名基线(逐字;与工单给定基线一致)。
 SIGNATURE_BASELINE = {
-    "ask": "(text=None, keywords=None, product_id=None, top_k=None, budget=None, "
+    "ask": "(text=None, keywords=None, product_id=93, top_k=None, budget=None, "
            "rerank=None, refresh=False, rate=None)",
     "search": "(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1, "
               "type_=None, rerank=None, budget=None, rate=None)",

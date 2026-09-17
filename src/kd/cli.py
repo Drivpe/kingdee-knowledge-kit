@@ -203,7 +203,8 @@ def build_parser():
                        formatter_class=argparse.RawDescriptionHelpFormatter)
     s.add_argument("text", nargs="?", default=None, help="自然语言问题或关键词(≤100 原始字符)")
     s.add_argument("--kw", action="append", default=None, help="多关键词模式(可重复,跳过自动拆解)")
-    s.add_argument("--product", type=int, default=None)
+    s.add_argument("--product", type=int, default=93,
+                   help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤(显式指定才生效)")
     s.add_argument("--topk", dest="kw_topk", type=int, default=None,
                    help="深读条数 1-8(默认取 query_routes.json 的 deepRead.topK=4)")
     s.add_argument("--budget", type=int, default=None, help="上游请求硬上限覆盖(默认 64,超限即停)")

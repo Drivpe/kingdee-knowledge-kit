@@ -625,24 +625,31 @@ def t_ask_budget_concurrency():
            % (maxv, used, used - maxv))
 
 
-@case("online: ask productId=0 与省略参数 —— 结果集等价、回显不等价", online=True)
+@case("online: ask productId 默认 93 / 显式 0 / 问句产品词覆盖", online=True)
 def t_product_id_zero():
-    # 结果集层:等价(上游必须省略 productIds[0] 参数,传 0 会被当真值过滤)
+    # 结果集层:search 的 0 与 None 等价(上游必须省略 productIds[0] 参数,传 0 会被当真值过滤)。
+    # 注意:本层只测 search —— ask 的 None 已不再是"不过滤",见下。
     a = core.search(QUERY, product_id=0, page=1, page_size=5)
     b = core.search(QUERY, product_id=None, page=1, page_size=5)
     ok(a["total"] == b["total"],
        "product_id=0 与省略的 total 不等价: %r vs %r" % (a["total"], b["total"]))
     ok([x["id"] for x in a["results"]] == [x["id"] for x in b["results"]],
        "product_id=0 与省略的结果 id 序列不等价")
-    # 回显层:不等价,显式定档 —— 0 回显 0,省略回显 None
+
+    # 回显层(2026-09-17 契约变更):ask 默认 product_id=93。
+    # 此前 ask 默认 None,省略即"不带产品过滤";改为默认 93 后:
+    #   省略 → 93(旗舰版);显式 0 → 0(不过滤,唯一得到不过滤的方式)。
     p0 = core.ask(QUERY, product_id=0, top_k=1)
     pn = core.ask(QUERY, top_k=1)
     ok(p0["effectiveProductId"] == 0,
        "product_id=0 应回显 0(显式不过滤),实为 %r" % (p0["effectiveProductId"],))
-    ok(pn["effectiveProductId"] is None,
-       "省略 product_id 应回显 None(未指定),实为 %r" % (pn["effectiveProductId"],))
-    # 未指定时若问句含产品别名,会自动推导(此处不带别名 → None)
-    ok(a["total"] == b["total"], "结果集等价性在第二次对照中不成立")
+    ok(pn["effectiveProductId"] == 93,
+       "省略 product_id 应回显 93(默认旗舰版),实为 %r" % (pn["effectiveProductId"],))
+
+    # 问句产品词优先于默认:含别名时覆盖 93,不再一律旗舰版
+    pq = core.ask("苍穹 信用额度控制", top_k=1)
+    ok(pq["effectiveProductId"] == 87,
+       "问句含「苍穹」应推导为 87 覆盖默认 93,实为 %r" % (pq["effectiveProductId"],))
 
 
 @case("online: v4 管线(rerank=1)与兼容路径(rerank=0)都可跑通", online=True)
