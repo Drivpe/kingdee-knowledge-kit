@@ -42,9 +42,10 @@ PY = sys.executable
 RUN = os.path.join(SRC, "kd_run.py")
 
 # ---------------------------------------------------------------- 契约基线
-# ask 顶层 13 键 + 新内核新增 synthesisBrief(新增字段不算等价失败)。
+# ask 顶层实测 12 键 = 基线 11 键(ASK_KEYS)+ 新内核新增 synthesisBrief
+# (新增字段不算等价失败,故不并入 ASK_KEYS,只在 check_no_extra 白名单里放行)。
 #
-# ⚠️ 实测不符:基线列的 13 键里 `semanticRerank` 在**新内核中不存在**。
+# ⚠️ 实测不符:基线列的旧键表里 `semanticRerank` 在**新内核中不存在**。
 # 该字段来自旧 HTTP 服务的 semantic_rerank.py(随去服务化整体删除,
 # 见 docs/specs/2026-09-16-去服务化重构.md 决策 4)。故此处把
 # `semanticRerank` 从"必须存在"降为"允许存在但不应出现"——它是**旧版残留字段**,
@@ -60,7 +61,7 @@ BRIEF_KEYS = {"sourceCount", "topScores", "routeKinds", "routeCount", "budgetExh
 # 故 sortsType 定为条件字段,判据放在 productIds 同档;kind/terms/why 才是硬契约。
 ROUTE_KEYS = {"kind", "terms", "why"}
 ROUTE_OPT_KEYS = {"sortsType", "productIds"}
-# sources[] 11 字段
+# sources[] 10 字段
 SOURCE_KEYS = {"rank", "type", "id", "questionId", "title", "url", "snippet",
                "fusedScore", "products", "detail"}
 # sources[].detail 16 字段(旧版 17,已摘 landing)。detail 是各 kind 的并集:
@@ -72,7 +73,7 @@ DETAIL_ALLOWED_KEYS = DETAIL_BASE_KEYS | {
     "usefuls", "comments", "error"}
 CHUNK_KEYS = {"seq", "heading", "text"}
 
-# search 顶层 11 键;结果项 10 字段(并集:answer 条目额外带 questionId/questionBody/
+# search 顶层 10 键;结果项 10 字段(并集:answer 条目额外带 questionId/questionBody/
 # adopted/answersCount/comments,knowledge 带 useful,article 带 supports)
 SEARCH_KEYS = {"ok", "text", "total", "queries", "page", "pageSize", "totalPages",
                "results", "scanNote", "stats"}
@@ -311,7 +312,7 @@ def t_no_landing_field():
 
 
 # ================= 联网组:真实上游(默认不跑) =================
-@case("online: search 顶层 11 键 + 结果项字段 + total 稳定(基线 6199,容差 2%)", online=True)
+@case("online: search 顶层 10 键 + 结果项字段 + total 稳定(基线 6199,容差 2%)", online=True)
 def t_search_contract():
     r = core.search(QUERY, product_id=93, page=1, page_size=5)
     ks = keys_of(r, "search")
@@ -404,7 +405,7 @@ def t_read_contract():
     check_subset(keys_of(d["stats"], "read.stats"), {"upstreamCalls", "elapsedMs"}, "read.stats")
 
 
-@case("online: ask 顶层 13 键 + synthesisBrief 8 字段", online=True)
+@case("online: ask 顶层 12 键 + synthesisBrief 8 字段", online=True)
 def t_ask_contract():
     p = core.ask(QUERY, product_id=93, top_k=3)
     ks = keys_of(p, "ask")
@@ -456,7 +457,7 @@ def t_ask_routes():
        "显式关键词应各成一路,实为 %r" % ([r["kind"] for r in pk["routes"]],))
 
 
-@case("online: ask sources[] 11 字段 + detail 16 字段 + chunks 3 字段", online=True)
+@case("online: ask sources[] 10 字段 + detail 16 字段 + chunks 3 字段(降级态另判)", online=True)
 def t_ask_sources():
     p = core.ask(QUERY, product_id=93, top_k=3)
     ok(p["sources"], "ask 未产出任何 sources")
@@ -471,6 +472,13 @@ def t_ask_sources():
         ok(isinstance(s["fusedScore"], (int, float)), "%s.fusedScore 应为数值" % name)
         d = s["detail"]
         dk = keys_of(d, "%s.detail" % name)
+        if d.get("ok") is False:
+            # 深读降级(预算耗尽或上游异常):_fetch_for_item 有意返回
+            # {"ok": False, "error": ...} 两键字典,不是契约破坏。
+            # 降级时只有"降级形态正确"可断言,其余契约字段本就不存在。
+            ok("error" in dk, "%s.detail 降级却未带 error 字段" % name)
+            check_no_extra(dk, {"ok", "error"}, "%s.detail(降级)" % name)
+            continue
         check_subset(dk, DETAIL_BASE_KEYS, "%s.detail" % name)
         check_no_extra(dk, DETAIL_ALLOWED_KEYS, "%s.detail" % name)
         ok("landing" not in dk, "%s.detail 仍含 landing(工单 #20 应已摘除)" % name)
@@ -488,7 +496,7 @@ def t_ask_sources():
        "sources 展示排序不符(answer 优先、knowledge 紧随): %r" % (order,))
 
 
-@case("online: ask budget 硬上限(并发深读下仍不越限)", online=True)
+@case("online: ask budget 契约(max 回显/used 与 upstreamCalls 一致/budget=0 零上游)", online=True)
 def t_ask_budget():
     p = core.ask(QUERY, product_id=93, top_k=8, budget=4)
     b = p["budget"]
@@ -504,7 +512,7 @@ def t_ask_budget():
     ok(p0["budget"]["used"] == 0, "budget=0 却消耗了上游请求")
 
 
-@case("online: ask budget 硬上限在并发深读下不被击穿", online=True)
+@case("online: ask budget 并发正确性(max=2/3/4 深读下 used 不越限)", online=True)
 def t_ask_budget_concurrency():
     """期望行为:`ask(top_k=8, budget=N)` 的 budget.used 恒不超过 max。
 

@@ -20,6 +20,13 @@
      若干内部件,那些名字必须仍存在于实现体模块中。判据 4 钉的是「旧内部件不得
      变成 kd.core 的属性」,方向相反,覆盖不到"内部件被删/改名导致 health 静默崩"。
      依赖清单从 cmd_health 源码里提取(不手写第二份真相,避免清单自身腐烂)。
+     覆盖三种失败,任一即 FAIL——本判据不靠判据 6 兜底,能独立失败:
+       a. 取不到依赖清单:读不到 cli.py,或正则定位不到 cmd_health(函数被改名/删除)。
+       b. 清单为空:函数定位到了,但体内没有任何 `_cp.<name>` 引用(取数被抽走)。
+       c. 清单非空但有条目在实现体里已失联(名字被删/改名,health 会崩)。
+     **不覆盖**:只认 `_cp.<identifier>` 字面量,经局部变量转手或 getattr 拼接的
+     间接引用抓不到。可接受,因为这类漏只表现为少一条钉子(漏报),不会误报;
+     要绕开它须主动改写 cmd_health 取数方式,属有心规避,而本判据挡的是自然腐烂。
 
 用法:
   python3 scripts/check_core_surface.py            # 人类可读输出
@@ -84,19 +91,53 @@ def _health_impl_deps(src):
 
     判据 7 的数据来源。为什么不手写清单:`_cp.X` 是 health 与实现体之间的真实耦合,
     手写清单会在下次改 health 时与代码脱节,变成第二处腐烂的真相。
-    只认 `_cp.<identifier>` 字面量,故 `_cp._route_cfg()` / `_cp.RERANK_DEFAULT`
-    都能抓到,而间接引用(如经局部变量转手)会漏——漏了也只是少一条钉子,不会误报。
+
+    **三态返回**,调用方必须靠 `status` 区分,不得再把三者压成同一个结果:
+      - status="unavailable":取不到依赖清单(读不到 cli.py / 正则失配——函数被改名、
+        删除、或换成了 async/lambda 等本正则不认的写法)。这是**否定证据**,
+        守卫无法证伪「health 仍健康」,故判据 7 必须 FAIL 并报出原因。
+      - status="empty":文件读到了、函数定位到了,但函数体里一条 `_cp.` 引用都没有。
+        同样是 FAIL——health 本就要经观测口读内部件,没有引用意味着提取口径失效
+        (逻辑被抽走、前缀改名、或依赖改从别的入口取)。
+      - status="ok":清单非空,逐项拿实现体校验。
+
+    已知局限(明确接受):只认 `_cp.<identifier>` 字面量。`_cp._route_cfg()` /
+    `_cp.RERANK_DEFAULT` 这类属性访问都能抓到,但经局部变量转手
+    (如 `cov = _cp; cov._route_cfg()`)或 getattr 拼接的间接引用抓不到。
+    之所以可接受:这种漏只表现为「少一条钉子」(漏报),不会把健康的 health 判成坏;
+    真要绕开它得主动改写 cmd_health 的取数方式,属于有心规避而非自然腐烂,
+    而自然腐烂恰恰是本判据要挡的东西。代价是清单变了要跟着改 health 才会被发现,
+    换来的是不手写第二份真相。
     """
     cli_path = os.path.join(src, "kd", "cli.py")
     try:
         with open(cli_path, encoding="utf-8") as f:
             text = f.read()
-    except OSError:
-        return None
+    except OSError as e:
+        return {
+            "status": "unavailable",
+            "reason": "读不到 %s(%s)" % (cli_path, e.__class__.__name__),
+            "path": cli_path,
+            "deps": [],
+        }
     m = re.search(r"def cmd_health\(.*?(?=\ndef |\Z)", text, re.S)
     if not m:
-        return None
-    return sorted(set(re.findall(r"_cp\.([A-Za-z_][A-Za-z0-9_]*)", m.group(0))))
+        return {
+            "status": "unavailable",
+            "reason": "无法从 %s 定位 cmd_health(函数被改名/删除,或换成了本正则不认的写法)"
+                      % cli_path,
+            "path": cli_path,
+            "deps": [],
+        }
+    deps = sorted(set(re.findall(r"_cp\.([A-Za-z_][A-Za-z0-9_]*)", m.group(0))))
+    if not deps:
+        return {
+            "status": "empty",
+            "reason": "cmd_health 已定位,但函数体内没有任何 `_cp.<name>` 引用(取数逻辑被抽走/前缀被改)",
+            "path": cli_path,
+            "deps": [],
+        }
+    return {"status": "ok", "reason": "", "path": cli_path, "deps": deps}
 
 
 def collect():
@@ -154,12 +195,24 @@ def collect():
 
     # 判据 7:cmd_health 经观测口依赖的内部件必须仍可解析。
     # 抓的是"内部件被删/改名 → health 静默崩、守卫照样 PASS"这一类漂移。
-    health_deps = _health_impl_deps(src)
+    # 三态:取不到清单(unavailable)/ 清单为空(empty)/ 清单非空(ok)。
+    # 前两态都 FAIL——本判据不靠判据 6 兜底,必须能独立失败:即使 _impl() 一切正常,
+    # 「找不到被守卫对象」也不能算「被守卫对象健康」。
+    extracted = _health_impl_deps(src)
+    health_deps = extracted["deps"]
     health_missing = []
-    if health_deps is None:
-        health_deps = []
-    elif impl is not None:
+    if extracted["status"] == "ok" and impl is not None:
         health_missing = [n for n in health_deps if not hasattr(impl, n)]
+    health_probe = extracted["status"] == "ok" and not health_missing
+    if extracted["status"] != "ok":
+        health_probe_reason = extracted["reason"]
+    elif impl is None:
+        health_probe_reason = "kd.core._impl() 不可用,无法校验内部件(判据 6 同源)"
+        health_probe = False
+    elif health_missing:
+        health_probe_reason = "内部件失联: %s" % ", ".join(health_missing)
+    else:
+        health_probe_reason = ""
 
     checks = {
         "no_leaked_names": not leaks,
@@ -169,7 +222,7 @@ def collect():
         "forbidden names absent": not forbidden_hits,
         "signatures unchanged": not sig_mismatch,
         "exception identity consistent": all(exc_identity.values()),
-        "health impl deps resolvable": not health_missing,
+        "health impl deps resolvable": health_probe,
     }
     return {
         "ok": all(checks.values()),
@@ -184,8 +237,12 @@ def collect():
         "forbidden_hits": forbidden_hits,
         "signature_mismatch": sig_mismatch,
         "exception_identity": exc_identity,
+        "health_deps_status": extracted["status"],
+        "health_deps_source": extracted["path"],
+        "health_deps_reason": extracted["reason"],
         "health_deps": health_deps,
         "health_missing": health_missing,
+        "health_check_reason": health_probe_reason,
         "checks": checks,
     }
 
@@ -209,7 +266,11 @@ def main():
         print("  签名偏差: %s" % (json.dumps(r["signature_mismatch"], ensure_ascii=False)
                                   if r["signature_mismatch"] else "无"))
         print("  异常身份: %s" % r["exception_identity"])
-        print("  health 内部件依赖(%d): %s" % (len(r["health_deps"]), ", ".join(r["health_deps"]) or "无"))
+        print("  health 内部件依赖(%d, %s): %s"
+              % (len(r["health_deps"]), r["health_deps_status"],
+                 ", ".join(r["health_deps"]) or "无"))
+        if r["health_check_reason"]:
+            print("  health 判据 7 失败原因: %s" % r["health_check_reason"])
         if r["health_missing"]:
             print("  失联依赖: %s(health 会崩,必须在实现体里补回或改 cmd_health)"
                   % ", ".join(r["health_missing"]))
