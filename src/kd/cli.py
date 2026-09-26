@@ -153,7 +153,7 @@ def build_parser():
                     "内核只去重,不产生任何评分。",
         epilog='示例:\n'
                '  kd search "应用为禁用状态[网关]" --product 93   # 唯一检索入口:多路清单,带 hitRoutes\n'
-               '  kd search --kw "BOM 分母" --kw "MRP 运算"        # LLM 拆好词直接传(跳过自动拆解)\n'
+               '  kd search --kw "2510" --kw "应用为禁用状态[网关]"  # 稀有 token 抢第 1 路 + 原句保召回\n'
                '  kd read 402990431979506944                       # 从清单挑出 id 再读全文(kind 照抄 type)\n'
                '  kd health                                        # 内核自检(库模式,无服务)',
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -164,7 +164,8 @@ def build_parser():
                                       "(每路 pageSize=10,按路序+上游原生序;要全文再用 kd read)",
                        epilog='示例:\n'
                               '  kd search "应用为禁用状态[网关]" --product 93   # 清单带 hitRoutes/routes\n'
-                              '  kd search --kw "信用额度" --kw "应收单 信用"     # 显式关键词(LLM 拆词入口)\n'
+                              '  kd search --kw "2510" --kw "应用为禁用状态[网关]" --product 93  # 稀有 token 抢第 1 路 + 原句保召回\n'
+                              '  kd search --kw "信用额度" --kw "应收单 信用"     # 显式关键词(LLM 拆词入口;第 1 词充原句路)\n'
                               '  kd search "信用额度控制" --type answer          # 类型过滤(每路各带,独立跨页扫描)\n'
                               '  kd search "信用额度控制" --max-routes 1         # 退化为单路(上游原生序)\n'
                               '  kd read 402990431979506944                      # 从清单里挑出的 id 再读全文',
@@ -172,7 +173,8 @@ def build_parser():
     s.add_argument("text", nargs="?", default=None,
                    help="关键词(具体功能名/业务名词/报错词);只给 --kw 时可省略")
     s.add_argument("--kw", action="append", default=None,
-                   help="显式关键词(可重复,每词一路,跳过自动拆解)——LLM 拆好词的入口")
+                   help="显式关键词(可重复,每词一路)——LLM 拆好词的入口。"
+                        "原句路恒常存在:给了 text 由 text 充任,只给 --kw 时第 1 个 --kw 充任")
     s.add_argument("--product", type=int, default=93,
                    help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤(显式指定才生效)")
     s.add_argument("--type", choices=list(_VALID_TYPES), default=None, help="按实体类型过滤")

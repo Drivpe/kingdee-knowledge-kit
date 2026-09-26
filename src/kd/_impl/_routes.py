@@ -34,7 +34,8 @@ def _plan_routes(text=None, keywords=None, product_id=None):
     """一句话 → ≤maxRoutes 路检索词。返回 (routes, product_id)。
 
     两条入口:
-      * `keywords` 显式给出 → 每词一路,跳过全部自动拆解(调用层 LLM 拆词走这条);
+      * `keywords` 显式给出 → 每词一路,替代全部自动拆解(调用层 LLM 拆词走这条);
+        **原句路恒常存在**(2026-09-27):text 非空则由 text 充任,否则第 1 个 keyword 充任。
       * 否则按规则拆:原句路 + 症状词路 + 字段/实体名词路 + 产品/上下文词路。
     规则数据全部在包内 query_routes.json,不在代码里。
 
@@ -46,13 +47,33 @@ def _plan_routes(text=None, keywords=None, product_id=None):
     raw_cfg = cfg.get("rawRoute") or {}
     raw_sorts = int(raw_cfg.get("sortsType", 1))
     raw_max = int(raw_cfg.get("maxChars") or UPSTREAM_TEXT_MAX)
-    if keywords:  # 调用方显式关键词:每词一路,保持既有语义
-        routes, seen = [], set()
+    if keywords:  # 调用方显式关键词:每词一路,**原句路恒常补入**(ADR-0009)
+        # 为什么显式关键词路径也要原句路:原句路的价值是独立于拆词的
+        # (完整语境的词汇鸿沟召回)。旧实现在本分支直接丢弃 text、只留回显,
+        # 于是"我给整句 + 我给拆好的词"这种最自然的用法反而丢了原句路——
+        # 用户 2026-09-27 拍板:**默认就是要原句的**,不留开关。
+        kws, seen = [], set()
         for k in keywords:
             k = str(k).strip()
             if k and k not in seen:
                 seen.add(k)
-                routes.append({"kind": "explicit", "terms": k, "why": "调用方显式关键词"})
+                kws.append(k)
+        routes = []
+        raw_text = str(text or "").strip()
+        if raw_text:
+            # text 非空 → 由它充任原句路(固定 sortsType=1,占第 1 路)。
+            routes.append({"kind": "raw:question", "terms": clamp_query(raw_text, raw_max),
+                           "why": "原句路(调用方给了 text,自动补为第 1 路;"
+                                  "片段路的词汇鸿沟无法覆盖时由此救回)",
+                           "sortsType": raw_sorts})
+        elif kws:
+            # text 未给 → 第 1 个关键词就是调用方给的"整句/完整报错串",由它充任原句路
+            # (故它不再另占一条 explicit 路:路数不变,只有排序姿态变精确)。
+            routes.append({"kind": "raw:question", "terms": kws.pop(0),
+                           "why": "原句路(调用方未给 text,取第 1 个关键词充任)",
+                           "sortsType": raw_sorts})
+        for k in kws:
+            routes.append({"kind": "explicit", "terms": k, "why": "调用方显式关键词"})
         routes = routes[:max_routes]
         if product_id and int(product_id) != 0:
             for r in routes:

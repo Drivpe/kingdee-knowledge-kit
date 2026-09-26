@@ -36,9 +36,10 @@ def search(text=None, keywords=None, product_id=93, page=1, page_size=10,
     列出来,交给你(调用方 agent)按标题匹配度决定读哪几篇。要全文走 `read(id, kind=type)`。
 
     text       检索词(str)。超过上游 100 原始字符 → raise QueryTooLong(不静默截断)。
-    keywords   显式关键词列表(**跳过自动拆解**,每词一路)。与 text 二选一或并用:
+    keywords   显式关键词列表(**替代自动拆解**,每词一路)。与 text 可并用且推荐并用:
                这是给 LLM 拆词留的入口——你在调用层把问题拆成关键词后传进来,
-               内核不持有模型通道。给 keywords 时 text 可为 None。
+               内核不持有模型通道。**原句路恒常存在**(2026-09-27):给了 text 由 text 充第 1 路,
+               只给 keywords 时**第 1 个 keyword 充任原句路**(故它不再另占一路)。
     product_id 93=星空旗舰版(默认)/ 87=苍穹 / 1=企业版标准版;显式 0 = 不过滤(省略参数)。
                问句里出现产品别名时(「苍穹」等)由拆解器推导并覆盖本默认。
     page/page_size  清单分页(**非上游分页**):每路上游固定 pageSize=10,

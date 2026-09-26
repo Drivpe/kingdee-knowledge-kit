@@ -623,6 +623,48 @@ def t_keywords_entry():
     ok(r3["keywords"] is None, "未给 keywords 时 search.keywords 应为 None,实为 %r" % (r3["keywords"],))
 
 
+@case("offline: --kw 模式原句路恒常补入(用户 2026-09-27 拍板:默认就是要原句的)")
+def t_keywords_raw_route():
+    """`--kw` 分支此前**整条原句路消失**(2026-09-18 记录,2026-09-27 修)。
+
+    旧:`_plan_routes(keywords=[…])` 直接把 text 丢掉,只留回显——于是
+    "我给整句 + 我同时给拆好的词"这种最自然的用法反而丢了原句路,而原句路恰是
+    ADR-0009 实测最值钱的一路。用户裁决:**默认就是要原句的**,不留开关。
+
+    新契约(两条分支各验一次):
+      * `text` 非空 → text 充任第 1 路(原句路),其余关键词依次成 explicit 路;
+      * `text` 为空 → **第 1 个关键词**充任原句路(故不再另占 explicit 路:
+        路数不变、queries 逐字不变,只有第 1 路的 kind/sortsType 变精确)。
+    """
+    # (a) 只给 keywords:第 1 个关键词升格为原句路,路数与 queries 都不变。
+    r, seen = _patched_search((), keywords=["甲", "乙", "丙"], product_id=93, budget=10)
+    ok(r["queries"] == ["甲", "乙", "丙"],
+       "只给 keywords 时 queries 应逐词保持原序(第 1 词改充原句路,不增不减): %r"
+       % (r["queries"],))
+    ok(len(seen) == 3, "只给 3 个 keywords 应恰好 3 路(不因补原句路而多出一路): %r"
+       % ([c["text"] for c in seen],))
+    ok(seen[0]["sorts_type"] == 1,
+       "第 1 个关键词充任原句路后必须用 sortsType=1(相关性),实为 %r"
+       % (seen[0]["sorts_type"],))
+
+    # (b) text + keywords 并用:text 充任原句路(第 1 路),keywords 随后。
+    r2, seen2 = _patched_search(("整句报错串",), keywords=["甲", "乙"], product_id=93, budget=10)
+    ok(r2["queries"] == ["整句报错串", "甲", "乙"],
+       "text+keywords 并用时第 1 路必须是 text(原句路),实为 %r" % (r2["queries"],))
+    ok(len(seen2) == 3, "text+2 个 keywords 应恰 3 路,实为 %r"
+       % ([c["text"] for c in seen2],))
+    ok(seen2[0]["sorts_type"] == 1,
+       "原句路必须固定 sortsType=1,实为 %r" % (seen2[0]["sorts_type"],))
+    ok(r2["text"] == "整句报错串", "text 仍应回显,实为 %r" % (r2["text"],))
+    ok(r2["keywords"] == ["甲", "乙"], "keywords 仍应回显原列表,实为 %r" % (r2["keywords"],))
+
+    # (c) text 与某关键词逐字相同时不得产生两条同词路(去重兜住)。
+    r3, seen3 = _patched_search(("整句报错串",), keywords=["整句报错串", "乙"],
+                                product_id=93, budget=10)
+    ok(len(set(r3["queries"])) == len(r3["queries"]),
+       "text 与关键词重复时不得出现同词两路(塌缩去重必须兜住): %r" % (r3["queries"],))
+
+
 @case("offline: --global 透传 —— _search_upstream 收到的 global_ 与调用方一致")
 def t_global_passthrough():
     """**本轮硬证据**(spec 第 2.3 节缺陷 A,真 bug 的回归钉子)。

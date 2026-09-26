@@ -11,12 +11,18 @@ from ._config import UPSTREAM_TEXT_MAX, VIP
 from ._net import _get_json, clamp_query
 from ._text import _is_true, _title_of, html2text
 
-# 条目对外链接模板。可点性**按路径而异**(2026-09-17 实测,ADR-0012 决策 3):
-#   knowledge/<id> → HTTP 200 且含正文,可点;
-#   article/<id>   → 302 到 knowledge/<新id>(路径迁移,最终 200);
-#   question/<id>  → 302 到 /error/404(帖子被删)。
+# 条目对外链接模板。可点性**按路径而异**(2026-09-27 复核实测):
+#   knowledge/<id> → 首跳 200、最终 URL 原地,可点(30/30);
+#   article/<id>   → 首跳 200、最终 URL 原地,可点(12/12)。
+#                    ⚠️ 旧注释称"302 到 knowledge/<新id>(路径迁移)"——**已被实测推翻**,
+#                    迁移仅观测到 1 次且不可复现,不构成常态口径。
+#   question/<id>  → 302 到 /error/404,不可点(38/38)。本套件 answer 条目的 url 用的就是它,
+#                    故引用 answer 时不给该链接(详见 docs/ANSWER-SPEC.md 第 3 条)。
 # ⚠️ 陷阱:`question/` 的**最终 HTTP 状态码是 200**(成功重定向到了 404 页面),
-# 只看状态码会误判为可用——必须看 url_effective。故引用优先用 knowledge/。
+# 只看状态码会误判为可用——必须看 url_effective。
+# ⚠️ 且"knowledge/ 可点"是**优先级而非保证**:knowledge/ 与 article/ 均有失效样本
+# (knowledge/402990431979506944、article/248777993676668672 稳定 302),须逐条判定。
+# 不要试图把 question/ 改成 questions/(复数)——实测该路径同样不存在(15/15 全 302)。
 _URL_OF = {"knowledge": VIP + "/knowledge/%s", "answer": VIP + "/question/%s",
            "article": VIP + "/article/%s"}
 
