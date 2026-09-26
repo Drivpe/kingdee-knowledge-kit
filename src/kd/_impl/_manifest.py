@@ -267,6 +267,12 @@ def _search_manifest(text=None, keywords=None, product_id=None, page=1, page_siz
             "total": total,
             "queries": [r["terms"] for r in route_list],
             "routesPlanned": planned, "routesDegraded": bool(degraded),
+            # 本次**实际生效**的产品过滤:None=未带任何过滤,整数=产品线 id。
+            # 这是调用方唯一可执行的产品线判据(与 --product 同值域,可直接比对):
+            # 它经 _plan_routes 推导后的结果——问句里出现「苍穹」等别名时会被覆盖,
+            # 故不能用调用方传入的原始值代替。原由 ask 独有,ask 删除后本内核若无此键,
+            # 调用方就失去了核对产品线的落点(ANSWER-SPEC 第 8 条依赖它)。
+            "effectiveProductId": product_id,
             "page": page, "pageSize": page_size, "totalPages": total_pages,
             "results": clipped,
             "routeErrors": route_errors,
