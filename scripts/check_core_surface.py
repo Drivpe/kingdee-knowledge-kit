@@ -6,6 +6,10 @@
 `hasattr(kd.core, "_rrf_fuse") is True`。偏差之所以发生,是因为人工复述
 「我改过了」不可靠,而没有可执行的判据。本脚本就是那个判据。
 
+**本轮(2026-09-18 单入口检索重构)改动**:公开面由 6 名收为 5 名(删 `ask`),
+实现体由模块 `kd._core_impl` 改为包 `kd._impl`,签名基线按 spec 第 2.2 节逐字重写。
+契约唯一真源:`docs/specs/2026-09-18-单入口检索重构.md` 第 2、9 节。
+
 判据(任一不成立即 fail,退出码 1):
   1. `kd.core` 顶层可属性访问的非双下划线名字,**恰好**等于公开面白名单;
      任何多出来的名字(内部函数/常量/被 import 的模块)都算「漏网名字」。
@@ -13,12 +17,16 @@
   3. `__all__` 与白名单逐项一致(顺序与集合都比)。
   4. 已知的旧内部件(top_chunks / _rrf_fuse / Budget / RateLimiter / RRF_K …)
      一律不可属性访问——这是回归钉子,防止将来有人把实现搬回 kd.core。
+     **本轮的锚点钉子**是 `ask`(用户 2026-09-18 拍板整条删除):它必须永久
+     不可属性访问,防止将来被当成「顺手补回来」的入口重新挂上公开面。
   5. 公开函数的签名与白名单基线逐字一致(改签名 = 破坏性变更)。
   6. 异常类的身份在「公开名」与「实现体」之间一致
      (否则 `except kd.core.QueryTooLong` 会漏接实现体抛出的实例)。
   7. 观测口依赖的内部件仍可解析:`cli.py` 的 `cmd_health` 经 `core._impl()` 读取
-     若干内部件,那些名字必须仍存在于实现体模块中。判据 4 钉的是「旧内部件不得
-     变成 kd.core 的属性」,方向相反,覆盖不到"内部件被删/改名导致 health 静默崩"。
+     若干内部件,那些名字必须仍存在于实现体(= 包 `kd._impl`)中。拆包后
+     `core._impl()` 返回**包对象**;判据逻辑对「模块/包」等价(都是 hasattr),
+     但包必须把 health 依赖的内部件**汇集到包命名空间**(再导出),否则本判据失败。
+     判据 4 钉的是「旧内部件不得变成 kd.core 的属性」,方向相反,覆盖不到"内部件被删/改名导致 health 静默崩"。
      依赖清单从 cmd_health 源码里提取(不手写第二份真相,避免清单自身腐烂)。
      覆盖三种失败,任一即 FAIL——本判据不靠判据 6 兜底,能独立失败:
        a. 取不到依赖清单:读不到 cli.py,或正则定位不到 cmd_health(函数被改名/删除)。
@@ -41,39 +49,77 @@ import os
 import re
 import sys
 
-# ---- 公开面基线(工单 #26 验收标准:真能对外用的只有这 6 个) ----
-PUBLIC_API = ["ask", "search", "read", "QueryTooLong", "UpstreamError", "InternalError"]
+# ---- 公开面基线(真能对外用的只有这 5 个;ask 已于 2026-09-18 整条删除) ----
+# 顺序即 kd.core.__all__ 的顺序,判据 3 逐项比对,不得重排。
+PUBLIC_API = ["search", "read", "QueryTooLong", "UpstreamError", "InternalError"]
 
-# 公开函数签名基线(逐字;与工单给定基线一致)。
+# 公开函数签名基线(逐字;与 spec 第 2.2 节一致,守卫逐字比对,差一个空格即 FAIL)。
+# search 相对旧签名的改动:新增 keywords(LLM 拆词入口)/text 改可选/routes→max_routes
+# (旧名与返回结构 results[].routes[] 同名不同义)/删 rerank(死形参);
+# read 删 refresh(死形参:内核恒在线)。
 SIGNATURE_BASELINE = {
-    "ask": "(text=None, keywords=None, product_id=93, top_k=None, budget=None, "
-           "rerank=None, refresh=False, rate=None)",
-    "search": "(text, product_id=None, page=1, page_size=10, global_=False, sorts_type=1, "
-              "type_=None, rerank=None, budget=None, rate=None, routes=None)",
-    "read": "(kind, oid, refresh=False, budget=None, rate=None)",
+    "search": "(text=None, keywords=None, product_id=93, page=1, page_size=10, "
+              "global_=False, sorts_type=1, type_=None, max_routes=None, budget=None, "
+              "rate=None)",
+    "read": "(kind, oid, budget=None, rate=None)",
 }
 
 # 回归钉子:这些名字在任何情况下都不得成为 kd.core 的可属性访问名。
-# 取自工单 #25 声明的「已改私有」清单 + 工单 #26 点名的漏网名单 + 模块级常量。
+#
+# **两个子集,判据同权(都在判据 4 里逐项 hasattr 检查),但杀伤力不同**:
+#
+#   A. 活钉子(live)—— 本轮实现包里**真实存在**的内部件。它们仍在被 import 的
+#      模块命名空间中,只有"kd.core 不 import 它们"这一条机制在挡住属性访问。
+#      钉子在这里的价值最高:任何把实现搬回 kd.core 的动作都会立刻变红。
+#      来源:逐项核对当前 `kd._impl` 全部子模块的 vars()(不是照抄历史清单)。
+#
+#   B. 墓碑钉子(tombstone)—— 本轮(release 22f8e35)已从实现体里**删净**的名字。
+#      `hasattr(kd.core, n)` 天然为 False,所以单独看它是永真钉子(无法失败)。
+#      它的价值是**防重新引入**:将来有人把 RRF 融合、深读 topK、chunks、ask 的
+#      某一段复制回来时,只要挂到 kd.core 上就会被抓住。
+#      因此墓碑钉子必须与"活钉子"同列——判据 4 一次扫全表,不区分两者。
+#      ⚠️ 墓碑钉子不得成为**唯一**钉住某项能力的机制:它只覆盖"被搬回公开面"
+#      这一种回归,不覆盖"被搬回实现体但没上公开面"。后者由守卫判据 1(漏网名字)
+#      与 tests/kd_regression.py 的返回值键集断言共同覆盖。
+#
+# **本轮删除的死钉子**(原清单里 9 个**在本轮之前**就已不在实现体中的名字):
+#   plan_routes / Budget / RateLimiter / chunk_text / top_chunks / knowledge_search /
+#   ask_bundle(工单 #25 声称已私有化,实测从未以这些**无前缀**名存在过)
+#   _answer_detail(4e297e6 之后即不存在)
+#   INDEX_DEFAULT(ADR-0011 决策 3 后即不存在)
+#   以及 math / hashlib / ThreadPoolExecutor(三个 stdlib 名:本轮实现体已不再
+#   import 它们——math/hashlib 随重排下线,ThreadPoolExecutor 随 ask 深读并发下线)。
+#   判据:它们既非活钉子也非**本轮**墓碑,挂着只是让禁用清单虚长而无一条能失败。
+#   删掉不是放宽:任何名字只要在**当前**实现体中真实存在,就会被列为活钉子。
 FORBIDDEN_NAMES = [
-    # 工单 #25 声称已私有化(顶层不可见)的旧名
-    "plan_routes", "Budget", "RateLimiter", "chunk_text", "top_chunks",
-    "knowledge_search", "ask_bundle",
-    # 工单 #26 实测的漏网名字
-    "_rrf_fuse",
-    # 其他内部实现件
-    "_select_top", "_plan_routes", "_Budget", "_BudgetExhausted", "_RateLimiter",
-    "_chunk_text", "_top_chunks", "_knowledge_search", "_ask_bundle",
-    "clamp_query", "html2text", "log", "_route_cfg", "_cfg_budget_max",
-    "_rate_profile", "_get_json", "_detail", "_norm_item", "_terms", "_fused_key",
-    "_salient_chunks", "_synthesis_brief", "_fetch_for_item", "_answer_brief",
-    "_answer_detail", "_article_detail", "_knowledge_article", "_question_detail",
-    "_search_upstream", "_fresh_bonus", "_rerank_bonus", "_is_true", "_up_inc", "_up_now",
-    # 模块级常量/配置(不得裸露为公开名)
-    "RERANK_DEFAULT", "RRF_K", "UPSTREAM_TEXT_MAX", "INDEX_DEFAULT", "VIP", "UA", "HDRS",
-    # 被 import 进来的标准库/第三方名(同样不该成为 kd.core 的属性面)
-    "json", "re", "os", "sys", "math", "random", "time", "threading", "hashlib",
-    "urllib", "ThreadPoolExecutor",
+    # ---- A. 活钉子:当前 kd._impl 里真实存在的内部实现件 ----
+    # 反向遍历全部子模块 vars() 得来,故"实现体里有哪些"与"禁用清单"不会脱节。
+    "ENTITY_KINDS", "UPSTREAM_TEXT_MAX", "VERSION", "VIP", "UA", "HDRS",
+    "_RATE", "_UP_LOCK", "_UP_N", "_ROUTE_CFG", "_ROUTE_CFG_PATH",
+    "_Budget", "_BudgetExhausted", "_RateLimiter", "_cfg_budget_search_max",
+    "_rate_profile", "_route_cfg", "cfg_max_routes", "_up_inc", "_up_now", "log",
+    "clamp_query", "_get_json", "html2text", "_title_of", "_is_true",
+    "_URL_OF", "_norm_item", "_search_upstream",
+    "_plan_routes", "_salient_chunks", "_dedupe_routes",
+    "_route_search_once", "_search_manifest", "_manifest_fuse", "_manifest_key",
+    "_manifest_project", "_manifest_rank", "_MAX_SCAN_PAGES",
+    "_DETAIL_FN", "_DETAIL_KINDS", "_DETAIL_WORKERS", "_detail",
+    "_knowledge_article", "_question_detail", "_article_detail", "_answer_brief",
+    "_fetch_for_item", "_q_products", "_resolve",
+    # ---- B. 墓碑钉子:本轮删净的件,防重新引入 ----
+    # B1. ask 及其整条链路(用户 2026-09-18 拍板:ask 全删)
+    "ask", "_ask_bundle", "_synthesis_brief", "_knowledge_search", "_select_top",
+    "_fused_key", "_terms",
+    # B2. RRF 融合与重排(决策 2:不使用任何算法排分,连命中路数排序也删)
+    "_rrf_fuse", "RRF_K", "RERANK_DEFAULT", "_rerank_bonus", "_fresh_bonus",
+    # B3. chunks 切片(只产 ask 的 chunks 字段)
+    "_chunk_text", "_top_chunks", "_HEADING_RE",
+    # B4. 随本轮一起改名的旧件(旧名不得复活;新名是 _cfg_budget_search_max)
+    "_cfg_budget_max",
+    # ---- C. 被 import 进来的标准库名(不该成为 kd.core 的属性面) ----
+    # 只列**当前实现体真实 import 的**:json/re/os/sys/random/time/threading/urllib。
+    # math/hashlib/ThreadPoolExecutor 本轮已不再 import,故移入上面的死钉子说明。
+    "json", "re", "os", "sys", "random", "time", "threading", "urllib",
 ]
 
 
@@ -163,7 +209,7 @@ def _check_version_single_source(src):
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         import importlib
-        impl = importlib.import_module("kd._core_impl")
+        impl = importlib.import_module("kd._impl")
         pkg = importlib.import_module("kd")
         kdcli = importlib.import_module("kd.cli")
     except Exception as e:
@@ -384,7 +430,7 @@ def main():
             print("  kind 判据 9 失败原因: %s" % r["kind_reason"])
         for k, v in r["checks"].items():
             print("  [%s] %s" % ("PASS" if v else "FAIL", k))
-        print("结论: %s" % ("PASS(公开面=ask/search/read+3 异常,零漏网)" if r["ok"] else "FAIL"))
+        print("结论: %s" % ("PASS(公开面=search/read+3 异常,零漏网;ask 不可属性访问)" if r["ok"] else "FAIL"))
     return 0 if r["ok"] else 1
 
 
