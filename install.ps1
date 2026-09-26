@@ -221,12 +221,12 @@ Write-Host "  kd health"
 Write-Host ""
 Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd health                                # 内核自检(库模式:无服务、无端口)"
-Write-Host "  kd ask ""信用额度怎么控制"" --topk 4      # 资料包(带 synthesisBrief 召回信号),交给调用方 agent 合成"
-Write-Host "  kd search ""信用额度控制"" --product 93"
-Write-Host "  kd read <id> --kind answer               # 读全文,kind 照抄 search 结果的 type"
+Write-Host "  kd search ""信用额度控制"" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
+Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 自己拆好词传进去(跳过自动拆解)"
+Write-Host "  kd read <id> --kind answer               # 取全文,kind 照抄 search 结果的 type"
 Write-Host ""
-Write-Host "本套件不合成回答(ADR-0008,零模型依赖):拿到 kd ask 资料包后,由 agent 按"
-Write-Host "docs/ANSWER-SPEC.md 合成;子代理提示词模板见技能 SKILL.md。"
+Write-Host "本套件不合成回答(ADR-0008,零模型依赖):kd search 只出清单,挑中的条目用 kd read 取全文,"
+Write-Host "再由你按 docs/ANSWER-SPEC.md 自己合成。排序由上游综合排序决定,内核只去重、零评分。"
 Write-Host ""
 Write-Host "技能实体在 ~\.agents\skills\kingdee-knowledge(通用兼容,Codex/Claude Code/opencode 直接读取)," -ForegroundColor Green
 Write-Host "WorkBuddy/ZCode/pi 目录已用 junction 挂到同一份——升级重跑本脚本一次即全家生效。" -ForegroundColor Green

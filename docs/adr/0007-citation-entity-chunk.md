@@ -33,3 +33,11 @@
 - 实测:四类网页 URL 匿名 302→passport;`/aisapi/document-chunks/2659901` 匿名 200 含全文与映射;
 - bundle 常量表:SEARCH_CHRUNKS_DETAIL 端点;官方分享对话 refs 结构(entityId/entityType/chunk id);
 - 事故复盘:docs/research/2026-09-06-product-routing-and-link-availability.md 缺陷 2。
+
+## 后续更正(2026-09-18,ADR-0013)
+
+本节不改写上文,只标注其**已失效的条款**:
+
+- **决策 3 的前提「四类网页 URL 匿名一律 302 到 passport 登录墙」已被实测推翻**(ADR-0012 决策 3 的更正表):三条路径**没有一条是登录墙**——`knowledge/<id>` → HTTP 200 且含正文(可点);`article/<id>` → 302 到 `knowledge/<新id>`(**路径迁移**,最终 200);`question/<id>` → 302 到 `/error/404`(**帖子被删**)。
+- 故**引用形态已改为可点击角标** `[标题](https://vip.kingdee.com/knowledge/<id>)`,而**不是** `entityId + chunkId`。引用**优先用 `knowledge/`**;`question/`、`article/` 的 URL 会因删除/迁移失效,只写标题或注明可能失效。
+- 决策 3 的「输出时静态标注 `link_public: false`」以及 `document-chunks/{chunkId}` 补偿机制**均已作废**:该端点从未落地(官方无「按文档列全部 chunk」端点,chunkId 只能来自登录态),`kd read --chunk` 消费端已随去服务化删除。

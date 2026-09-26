@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "kingdee-knowledge",
-      "description": "金蝶官方知识检索技能(AI-first):kd CLI 匿名检索金蝶云社区官方知识库(官方文档/社区问答/社区文章),读全文后按 ANSWER-SPEC 合成带引用回答。本套件零模型依赖、只产资料包,合成权在调用方 agent。零账号、零点数、零凭据。",
+      "description": "金蝶官方知识检索技能(AI-first):kd CLI 匿名检索金蝶云社区官方知识库(官方文档/社区问答/社区文章),只出标题清单,由 agent 自己挑、kd read 取全文、按 ANSWER-SPEC 合成带引用回答。排序由上游综合排序决定,内核只去重、不做任何算法评分。本套件零模型依赖,只出清单与全文,合成权在调用方 agent。零账号、零点数、零凭据。",
       "author": { "name": "kingdee-knowledge-kit" },
       "category": "knowledge",
       "keywords": ["kingdee", "k3cloud", "knowledge", "search"],

@@ -78,6 +78,42 @@ ADR-0008 把合成权移交调用方,`kd` 从此零模型依赖、只产资料�
 **不要改回 kd 输出这两个字段**:那会要求 kd 重新持有模型通道,直接推翻 ADR-0008 已经过质询的核心决策。
 阅读本 ADR 时,「输出体」一律理解为**合成方的回答输出体**,而非 kd 的 `ask` 返回体。
 
+## 后续更正(2026-09-18,ADR-0013)
+
+本节记录本轮变更对本 ADR 的影响,**不改写上文原文**(保持历史可追溯)。
+
+**1. 决策 2 与「修订说明」里的信号供给端已消失。** 上文的客观信号列表是
+`fusedScore` / 命中路数 / `budget_exhausted`,「修订说明」把它落到资料包顶层
+`synthesisBrief`(`sourceCount`/`topScores`/`routeKinds`/`budgetExhausted`/`upstreamUsed`/`recallHint`)。
+**`kd ask` 已随 ADR-0013 整体删除,`synthesisBrief` 与 `_synthesis_brief()` 一并删除**;
+`fusedScore` 更早就在 RRF 下线时消失(ADR-0013 决策 2)。**「供给端 = kd」这一半的存在形态作废**,
+但**该条决策本身仍然有效**——判定方依然必须看到客观召回信号,只是信号换了载体。
+
+**2. 判定依据改为清单信号。** 供给端现在是 `kd search` 的清单顶层字段:
+
+| 旧信号(已消失) | 新信号(清单) | 含义 |
+|---|---|---|
+| `synthesisBrief.topScores` / `fusedScore` | `hitRoutes` / `routes[]` | 条目被几路命中、来自哪几路。**纯信息,不参与排序**;多路命中的通常更泛,单路精确命中的往往更专 |
+| `synthesisBrief.routeKinds` | `queries[]` / `routeErrors[].kind` | 实际执行的检索词与失败路的类型 |
+| `synthesisBrief.upstreamUsed` | `stats.upstreamCalls` | 上游请求数 |
+| `synthesisBrief.budgetExhausted` | `budget_exhausted` | 检索是否完整 |
+| (新增) | `routesDegraded` | 路数塌缩:实际路数 < 计划路数(多路拆出同一串检索词) |
+| (新增) | `routeErrors[]` | 哪些路失败——有失败路即召回不完整 |
+
+外加 `results[]` 条目上**上游原生**的旁证:`adopted`/`answersCount`/`comments`/`supports`/`questionBody`
+(它们是上游直接给的,不是内核算的,与三档判定的"有证据的观察"要求同源)。
+
+**3. 决策 3、4 的口径由 ADR-0012 承接后又被部分作废,在此对齐。** 决策 3 的
+「JSON 头 + 正文连写」与决策 4 的「一次判断、两种呈现」中,**外显的 `confidence`/`basis` 字段
+已于 2026-09-17 由 ADR-0012 决策 3 取消**(改为纯内部判断依据,不出现在正文);
+本轮 `ask` 删除后,连"kd 侧的结构化字段落点"也不再存在,**三档判定完全落在外显之外**——
+它是合成方的内部纪律,正文只给定性结论。
+
+**4. 「禁止 0-1 分数」的三条理由全部保留且被强化。** 无校准、破坏诚实两条不依赖任何字段;
+量纲冲突一条的表述需微调:旧文说"与 `fusedScore` 不同量纲",现在是**与清单信号不同量纲**
+(LLM 自报的 0.7 与 `hitRoutes` 计数、布尔标志无法融合)——结论不变,**反而更纯粹**:
+清单里**不出现任何 score 字段**,合成方没有"顺手抄一个客观分"的余地。
+
 ## 备选与取舍
 
 - **阈值规则触发第二轮检索**:被否——阈值需标定,而评测体系当前已搁置(精度不足),无法标定;

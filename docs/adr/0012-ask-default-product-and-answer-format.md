@@ -123,6 +123,49 @@ ADR-0009(原句路)、ADR-0007(引用形态,部分条款本次更正)
   产品线节、快捷方式节改写。
 - **文档链路更正**:`knowledge/` 链接从"禁止当依据"改为"可点击依据"。
 
+## 后续更正(2026-09-18,ADR-0013)
+
+本节记录本轮变更对本 ADR 的影响,**不改写上文原文**(保持历史可追溯)。
+
+**1. 决策 1 的对象 `ask` 已整体删除,但其口径由 `search` 承接。** 本 ADR 把 `ask` 的
+`product_id` 默认值由 `None` 改为 `93`,并撤销三条产品线硬规则。ADR-0013 删除 `ask` 后:
+
+| 项 | 原落点(已删除) | 现落点 |
+|---|---|---|
+| `product_id` 默认 93 | `ask()` 签名 / CLI `ask --product` | **`search()` 签名 `product_id=93`**(`src/kd/_impl/_public.py`)/ **CLI `search --product` 默认 93**(`src/kd/cli.py`) |
+| **`effectiveProductId` 顶层键** | `ask` 返回体顶层独有(旧 `search` 无) | **`kd search` 清单返回体顶层**(`src/kd/_impl/_manifest.py`),语义=经 `_plan_routes` 推导后**实际生效**的值 |
+| 问句产品词优先于默认 | `_plan_routes` 中把 93 视为兜底 | **不变**,`_plan_routes` 未改,该逻辑照旧生效 |
+| 要真正的不过滤须显式 `--product 0` | `ask docstring` + ANSWER-SPEC 第 8 条 | **不变**,口径改挂在 `search` 上 |
+| 三条硬规则已撤销 | — | **不变**,撤销状态继承 |
+
+> `effectiveProductId` 一行是**执行期由契约走查发现的真实功能回退**:本轮 spec 第 3 节的返回结构设计漏列该键,
+> `ask` 删除后调用方将失去唯一可执行的产品线判据(而 ANSWER-SPEC 第 8 条依赖它),
+> 已于 2026-09-18 在内核侧补回(spec 第 3.3 节记录裁决与实测三态:默认→93 / 问句含「苍穹」→87 / 显式 0→0)。
+> 补回零额外成本——`_plan_routes` 早已算出该值,只是未外露。
+
+**结论**:决策 1 的**内容全部仍然有效**,只是承载命令从 `ask` 换成 `search`——
+`search` 本就是 2026-09-17 起的事实常规入口,本次只是把 `ask` 那半边删掉。
+`ANSWER-SPEC` 第 8 条与 `CONTEXT.md` 中的 `ask` 表述已同步改为 `search`(v2.4)。
+
+**2. 决策 2(默认不开子代理)仍然有效,且理由未变。** 其论证建立在"子代理看不到主对话、
+交付不完整、会错判置信度"三条实测上,**全部与 `ask` 是否存在无关**。`CONTEXT.md` 的
+「合成权」词条已据此改写为「默认不开子代理,由合成方直接作答」。原措辞里的
+「仅当**资料包**明显超长」应读作「仅当**清单**明显超长或一次要合成多份」。
+
+**3. 决策 3(答案形态可读优先)仍然有效,两处依赖被替换。** 去掉正文元信息、
+引用改可点击角标、`partial`/`uncovered` 时反问一句——三条均不变。
+但决策 3 的「去掉正文里的元信息」曾把 **`synthesisBrief`** 一并归类为元信息而不外显;
+`ask` 删除后 **`synthesisBrief` 与 `_synthesis_brief()` 整体不存在**,
+判定依据改由 `kd search` 的清单信号承担(`hitRoutes`/`routeErrors`/`budget_exhausted`/`routesDegraded`),
+详见 ADR-0010「后续更正(2026-09-18)」节。
+引用可点击角标的「按路径而异」口径(`knowledge/` 200 可点、`article/` 路径迁移、`question/` 帖子被删)
+**原样保留,未变**。
+
+**4. 「影响」节里的契约变更条目已随 `ask` 删除而失效。** 原文写「`ask` 签名的 `product_id`
+默认值由 `None` 改为 `93`」,该签名已不存在;守卫 `check_core_surface.py` 的 `SIGNATURE_BASELINE`
+已按新契约(`search` / `read` 两个函数)重写,`ask` 条目移除。原文的
+「回归基线同步」提到的 `t_product_id_zero` 亦随之改写为针对 `search` 的用例。
+
 ## 未决/残余
 
 - `get(question/<id>)` 路径的 404 是"帖子被删"还是别的成因,只抽样验证了 1 条,未做统计;
