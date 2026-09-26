@@ -40,6 +40,8 @@
 > 2026-09-18 单入口定案(ADR-0013)——`kd ask` 及其专属件(RRF 融合、深读 topK、`chunks`、
 > 召回信号摘要、`displayOrder`)全部删除;排序不再引入**任何算法评分**,上游综合排序已排好,
 > 内核只做去重;`search` 新增 `--kw`(LLM 拆词入口)与 `routesDegraded`(路数塌缩),`--routes` 改名 `--max-routes`。
+> **版本号抬到 6.3**:公开面由 6 名收敛为 5 名(`ask` 移除)、实现体由单文件 `_core_impl.py`
+> 拆为私有包 `kd/_impl/`、`search` 签名新增 `keywords` 并新增 `effectiveProductId` 顶层键。
 > v6.3:去服务化(ADR-0011)——HTTP 服务与十个端点、`kd share` / `kd manifest` 命令、本地落盘缓存
 > (`corpus/`、`~/.lingeebuild/landing`、`data/ksearch.db`)、`semantic_rerank` 与 `run_eval` 评测体系全部删除;
 > 检索内核改为可 import 的库(`kd.core` 公开面 = `search`/`read` + 三异常类),CLI 只剩 `search`/`read`/`health` 三条。

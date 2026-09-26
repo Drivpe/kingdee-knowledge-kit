@@ -17,9 +17,10 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.
 HDRS = {"User-Agent": UA, "Accept": "application/json"}
 
 # ---- 单一真源(守卫/回归钉住,勿在别处复制字面量) ----
-# 版本号:pyproject.toml 的 version 与此处一致(6.2.0 = 6.2 的三段写法),
+# 版本号:pyproject.toml 的 version 与此处一致(6.3.0 = 6.3 的三段写法),
 # __init__.__version__ 与 cli._VERSION 均从此处取。
-VERSION = "6.2"
+# 6.3 = 单入口检索(ADR-0013):kd ask 删除、公开面收敛为 search/read + 三异常、零算法排序。
+VERSION = "6.3"
 
 # 实体类型白名单:search 的 --type 与 read 的 --kind 共用同一集合。
 ENTITY_KINDS = ("knowledge", "answer", "article")
