@@ -103,7 +103,7 @@ FORBIDDEN_NAMES = [
     "_plan_routes", "_salient_chunks", "_dedupe_routes",
     "_route_search_once", "_search_manifest", "_manifest_fuse", "_manifest_key",
     "_manifest_project", "_manifest_rank", "_MAX_SCAN_PAGES",
-    "_DETAIL_FN", "_DETAIL_KINDS", "_DETAIL_WORKERS", "_detail",
+    "_DETAIL_FN", "_DETAIL_KINDS", "_detail",
     "_knowledge_article", "_question_detail", "_article_detail", "_answer_brief",
     "_fetch_for_item", "_q_products", "_resolve",
     # ---- B. 墓碑钉子:本轮删净的件,防重新引入 ----
@@ -200,10 +200,31 @@ def _read_pyproject_version(root):
     return None, path
 
 
-def _check_version_single_source(src):
-    """版本号单一真源:实现体 VERSION 是唯一出处,其余三处必须由它派生。
+PLUGIN_JSON_REL = os.path.join("skills", "kingdee-knowledge", ".claude-plugin", "plugin.json")
 
-    比较口径:pyproject 用三段(PEP 440),实现体用两段,故只比"前两段"是否一致;
+
+def _read_plugin_json_version(root):
+    """从技能清单 plugin.json 取 version(本仓该文件是扁平 JSON,版本号只在顶层)。
+
+    返回 (version, path)。读不到/解析失败/无 version 字段一律返回 None——
+    调用方据此 FAIL,不把"查不到"当"一致"。
+    """
+    path = os.path.join(root, PLUGIN_JSON_REL)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return None, "%s(%s)" % (path, e.__class__.__name__)
+    if not isinstance(data, dict):
+        return None, "%s(顶层不是对象)" % path
+    return data.get("version"), path
+
+
+def _check_version_single_source(src):
+    """版本号单一真源:实现体 VERSION 是唯一出处,其余四处必须由它派生。
+
+    比较口径:pyproject 与 plugin.json 用三段(PEP 440 / 插件清单惯例),
+    实现体用两段,故只比"前两段"是否一致;
     __init__.__version__ 与 cli._VERSION 必须与实现体逐字相等。
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -222,6 +243,7 @@ def _check_version_single_source(src):
     got_pkg = getattr(pkg, "__version__", None)
     got_cli = getattr(kdcli, "_VERSION", None)
     pyv, pypath = _read_pyproject_version(root)
+    plv, plpath = _read_plugin_json_version(root)
 
     problems = []
     if got_pkg != want:
@@ -232,6 +254,10 @@ def _check_version_single_source(src):
         problems.append("读不到 pyproject.toml 的 version(%s)" % pypath)
     elif str(pyv).split(".")[:2] != str(want).split(".")[:2]:
         problems.append("pyproject version=%r 前两段 != VERSION=%r" % (pyv, want))
+    if plv is None:
+        problems.append("读不到 %s 的 version(%s)" % (PLUGIN_JSON_REL, plpath))
+    elif str(plv).split(".")[:2] != str(want).split(".")[:2]:
+        problems.append("%s version=%r 前两段 != VERSION=%r" % (PLUGIN_JSON_REL, plv, want))
 
     if problems:
         return False, "; ".join(problems)
@@ -347,9 +373,10 @@ def collect():
         health_probe_reason = ""
 
     # 判据 8:版本号单一真源。
-    # 抓的是"实现体 VERSION / 包 __version__ / cli._VERSION / pyproject version
-    # 四份字面量各自演化"这一类漂移——此前实测为 6.2 / 0.1.0 / 6.2 / 6.2.0,
-    # 而 pipx install 会把 __version__ 当成发布版本号。
+    # 抓的是"实现体 VERSION / 包 __version__ / cli._VERSION / pyproject version /
+    # 技能清单 plugin.json version 五份字面量各自演化"这一类漂移——此前实测为
+    # 6.2 / 0.1.0 / 6.2 / 6.2.0,而 pipx install 会把 __version__ 当成发布版本号;
+    # plugin.json 是第五处:它对外决定技能包版本,却长期未纳入守卫。
     version_probe, version_reason = _check_version_single_source(src)
 
     # 判据 9:kind 集合一致性。

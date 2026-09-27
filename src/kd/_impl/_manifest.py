@@ -38,6 +38,23 @@ def _resolve(name):
     return getattr(sys.modules[__package__], name)
 
 
+def _route_sorts_type(route, fallback):
+    """取某路的 sortsType:路自带值优先,否则用调用方给的值,再否则默认 1。
+
+    缺陷 H 修复(2026-09-27):旧写法 `int(r.get("sortsType") or sorts_type or 1)`
+    用 `or` 链取值,而 **0 是 falsy** —— 路或调用方明确指定 `sortsType=0`
+    (相关性排序)时会被静默折成 1。当前上游实测 0 与 1 等价(都是相关性排序),
+    故这是**潜伏 bug**:一旦配置改用 0 表达某个与 1 不同的姿态(或上游区分二者),
+    会得到静默错误的排序且无任何信号。此处改为显式判空,保住 0。
+    """
+    v = route.get("sortsType")
+    if v is None:
+        v = fallback
+    if v is None:
+        return 1
+    return int(v)
+
+
 def _route_search_once(text, product_id, type_, budget, rate, global_=False, sorts_type=1,
                        page_size=10, want=10, max_scan_pages=_MAX_SCAN_PAGES):
     """单路检索:每路按 pageSize=10 向上游取,直到凑够 `want` 条或触到扫描上限。
@@ -194,9 +211,20 @@ def _search_manifest(text=None, keywords=None, product_id=None, page=1, page_siz
         raise InternalError("bad max_routes: %r(应为 1..%d 的整数)"
                             % (max_routes, cfg_max_routes()))
     route_list, product_id = _plan_routes(text=text, keywords=keywords, product_id=product_id)
+    # `routesPlanned` 的口径由 spec 第 3 节冻结:是**去重前、受 max_routes 截断后**的
+    # 计划路数。不要改成去重后的实际路数——那不是这个字段的语义。
     planned = min(len(route_list), plan)
-    route_list, degraded = _dedupe_routes(route_list)
+    route_list, _deduped = _dedupe_routes(route_list)
     route_list = route_list[:plan]
+    # 缺陷 G 的假阳性修复(2026-09-27):`routesDegraded` 必须按 spec 自己的公式算
+    # ——「`queries[]` 去重后的实际路数 < 计划路数」——而不是直接沿用
+    # `_dedupe_routes` 的布尔值。后者报的是"拆解器原始产出里有重复",与
+    # "计划执行的路数是否真的被去重削减"是两件事。
+    # 反例(修前):`max_routes=1` + 拆出 2 路同词 → planned=1、去重后实际=1,
+    # 但因 `_dedupe_routes` 看到重复就返回 true,回显 `routesDegraded=true` 且
+    # scanNote 写出"计划 1 路,去重后实际 1 路"——两个数字相同却说塌缩,自相矛盾。
+    # 按 spec 公式,此处 1 < 1 为假,正确地不报塌缩(截断本就不是塌缩)。
+    degraded = len(route_list) < planned
 
     route_lists, route_errors = [], []
     total, done = 0, 0
@@ -212,7 +240,7 @@ def _search_manifest(text=None, keywords=None, product_id=None, page=1, page_siz
         try:
             items, t, _pages = _route_search_once(
                 r["terms"], r.get("productIds"), type_, budget, rate,
-                global_=global_, sorts_type=int(r.get("sortsType") or sorts_type or 1),
+                global_=global_, sorts_type=_route_sorts_type(r, sorts_type),
                 page_size=10, want=per_route_want)
         except _BudgetExhausted:
             budget.mark_exhausted()
@@ -251,7 +279,10 @@ def _search_manifest(text=None, keywords=None, product_id=None, page=1, page_siz
     scan_parts = ["多路清单:%d/%d 路完成,每路 pageSize=10,去重后 %d 条"
                   % (done, planned, len(manifest))]
     if degraded:
-        scan_parts.append("路数塌缩:计划 %d 路,去重后实际 %d 路(多路拆出同一串检索词)"
+        # spec 第 3 节口径:写明「路数塌缩 N→M」,N=计划路数、M=去重后实际路数。
+        # `degraded` 已按 `len(route_list) < planned` 判定,故此处的两个数字必然不同
+        # (不会再出现旧写法那种"计划 1 路,去重后实际 1 路"的自相矛盾句子)。
+        scan_parts.append("路数塌缩:%d→%d 路(多路拆出同一串检索词)"
                           % (planned, len(route_list)))
     if type_:
         scan_parts.append("type=%s 过滤每路各带、跨页扫描独立计数(≤%d 页/路)"

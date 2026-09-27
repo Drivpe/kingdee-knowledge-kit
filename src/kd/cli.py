@@ -19,8 +19,9 @@ from . import core
 _IMPL = core._impl()
 
 _VERSION = _IMPL.VERSION
+# --type(search)与 --kind(read)是同一集合的两个入口,只保留一个名字:
+# 集合的语义是"实体类型白名单",与真源 _config.ENTITY_KINDS 同名根。
 _VALID_KINDS = _IMPL.ENTITY_KINDS
-_VALID_TYPES = _IMPL.ENTITY_KINDS
 
 
 def _out(obj):
@@ -48,8 +49,15 @@ def _usage_error(message, hint="", example=""):
     sys.exit(2)
 
 
-def _guard(fn):
-    """统一错误映射:core 的异常 → 带 hint 的 JSON + 退出码 1(用法类 → 2)。"""
+def _guard(fn, op="search"):
+    """统一错误映射:core 的异常 → 带 hint 的 JSON + 退出码 1(用法类 → 2)。
+
+    `op` 让 hint 与**实际发生的事**对应。此前 hint 全部写死成 search 的语境,
+    于是 `kd read <错id>` 拿到上游 404 时提示会说"text 超 100 字符"——与 read
+    毫无关系,把排查方向直接带偏(工单 #24 记录的误导项)。
+    """
+    read_op = (op == "read")
+    _ex = 'kd read 402990431979506944' if read_op else 'kd search "信用额度控制"'
     try:
         return fn()
     except core.QueryTooLong as e:
@@ -59,25 +67,31 @@ def _guard(fn):
             "message": str(e),
             "hint": "上游 text 硬上限 %d 原始字符(含标点/空格):超限上游返回 errorCode:409 空壳。"
                     "请精简后重试,或用 clamped 里的压回值重发。" % e.limit,
-            "example": 'kd search "信用额度控制"',
+            "example": _ex,
             "limit": e.limit,
             "length": len(e.original),
             "clamped": e.clamped,
         }})
         sys.exit(1)
     except core.InternalError as e:
-        _usage_error(str(e), hint="查看用法: kd --help", example='kd search "信用额度控制"')
+        _usage_error(str(e), hint="查看用法: kd --help", example=_ex)
     except core.UpstreamError as e:
+        if read_op:
+            _fail("upstream_error", "上游业务错误 errorCode=%s: %s" % (e.code, e.message),
+                  hint="按 id 取全文时上游报错。常见原因:传的 id 与 kind 不匹配"
+                       "(answer 必须传 questionId 而非条目 id),或该实体已被上游删除/迁移。"
+                       "请回到 search 清单照抄条目的 id/type 后重试。",
+                  example=_ex)
         _fail("upstream_error", "上游业务错误 errorCode=%s: %s" % (e.code, e.message),
               hint="上游以 HTTP 200 返回错误壳(常见于 text 超 100 字符或接口变更);请勿高频重试",
-              example='kd search "信用额度控制"')
+              example=_ex)
     except KeyError as e:
         _fail("bad_argument", "无法识别的参数: %s" % e,
-              hint="查看用法: kd --help", example='kd search "信用额度控制"')
+              hint="查看用法: kd --help", example=_ex)
     except Exception as e:
         _fail("internal_error", "%s: %s" % (type(e).__name__, str(e)[:200]),
               hint="内核异常(诊断信息见 stderr);这是 bug 而非用法问题,请带上 stderr 内容反馈",
-              example='kd search "信用额度控制"')
+              example=_ex)
 
 
 def cmd_search(a):
@@ -88,7 +102,8 @@ def cmd_search(a):
     _prog("多路拆解 %d 路: %s" % (len(pack.get("queries") or []),
                                   " | ".join(str(q) for q in pack.get("queries") or [])))
     if pack.get("routesDegraded"):
-        _prog("路数塌缩:计划 %s 路,去重后实际 %d 路"
+        # 与内核 scanNote 同措辞(「N→M 路」),避免同一事实两套说法。
+        _prog("路数塌缩:%s→%d 路"
               % (pack.get("routesPlanned"), len(pack.get("queries") or [])))
     if pack.get("budget_exhausted"):
         _prog("上游预算耗尽,清单不完整")
@@ -103,7 +118,7 @@ def cmd_read(a):
         _fail("chunk_not_in_core", "--chunk(官方 AI 引用 chunkId 溯源)尚未并入 kd.core",
               hint="该能力未落地:官方无「按文档列出全部 chunk」端点,chunkId 只能来自登录态;"
                    "消费端已移除,当前无可用入口")
-    _out(_guard(lambda: core.read(a.kind, a.id)))
+    _out(_guard(lambda: core.read(a.kind, a.id), op="read"))
 
 
 def cmd_health(_a):
@@ -177,7 +192,7 @@ def build_parser():
                         "原句路恒常存在:给了 text 由 text 充任,只给 --kw 时第 1 个 --kw 充任")
     s.add_argument("--product", type=int, default=93,
                    help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤(显式指定才生效)")
-    s.add_argument("--type", choices=list(_VALID_TYPES), default=None, help="按实体类型过滤")
+    s.add_argument("--type", choices=list(_VALID_KINDS), default=None, help="按实体类型过滤")
     s.add_argument("--page", type=int, default=1,
                    help="清单分页页码(作用于多路去重后的清单,非上游分页)")
     s.add_argument("--size", type=int, default=10,

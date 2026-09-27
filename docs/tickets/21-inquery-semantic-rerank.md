@@ -19,7 +19,7 @@ CONTEXT.md 词条「查询内语义重排」落地:ask 在深读 topK 前对候�
 - ① py_compile:仓库版 service/kingdee-ksearch-service.py + service/semantic_rerank.py,及部署副本 `~/.lingeebuild/config/`(已 cp 同步)均通过。
 - ② 重启后 `kd health`:`rerankSemantic {enabled:false, modelLoaded:false, reason:"not-loaded", modelDir:"...bge-small-zh-v1.5", timeoutMs:5000, maxCandidates:50}`;开启重启后 enabled:true、模型懒加载成功(日志 inputs=[input_ids,attention_mask,token_type_ids], output=last_hidden_state)。
 - ③ OFF 基线:上游 0 请求、cacheHits 2、8.6ms,sources 顺序与现状逐位一致,`semanticRerank.reason="switch off"`——**行为与现状完全一致**。
-- ④ ON(临时 env 开启,同一条缓存 ask):`semanticRerank{enabled:true, reordered:true, candidates:25, reason:"ok"}`;首调(含模型加载)1467.7ms,热调 790.2ms(25 候选,秒级内);**深读选择变化实锤**:rank2 由 584330946073958912(语义分 0.496)换成语义分最高的 636272302971087872(0.5649);回答 ok、detail 全文正常。展示排序规则未动。
+- ④ ON(临时 env 开启,同一条缓存 ask):`semanticRerank{enabled:true, reordered:true, candidates:25, reason:"ok"}`;首调(含模型加载)1467.7ms,热调 790.2ms(25 候选,秒级内);**深读选择变化实锤**:rank2 由 584330946073958912(语义分 0.496)换成语义分最高的 636272302971087872(0.5649);回答 ok、detail 全文正常。展示顺序未动。
 - ⑤ 降级路径:模型目录缺失时 rerank_candidates 返回原序列不变,reason="model files missing: ...",不影响回答可用性(进程内实测)。
 - ⑥ 上游纪律:全程真实上游请求仅 1 个(开启后深读新候选 636272302971087872 首读),符合 ≤4 限制;缓存命中零上游。
 

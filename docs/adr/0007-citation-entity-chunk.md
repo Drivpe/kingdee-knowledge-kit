@@ -38,6 +38,6 @@
 
 本节不改写上文,只标注其**已失效的条款**:
 
-- **决策 3 的前提「四类网页 URL 匿名一律 302 到 passport 登录墙」已被实测推翻**(ADR-0012 决策 3 的更正表):三条路径**没有一条是登录墙**——`knowledge/<id>` → HTTP 200 且含正文(可点);`article/<id>` → 302 到 `knowledge/<新id>`(**路径迁移**,最终 200);`question/<id>` → 302 到 `/error/404`(**帖子被删**)。
+- **决策 3 的前提「四类网页 URL 匿名一律 302 到 passport 登录墙」已被实测推翻**(ADR-0012 决策 3 的更正表):三条路径**没有一条是登录墙**——`knowledge/<id>` → HTTP 200 且含正文(可点);`question/<id>` → 302 到 `/error/404`(**帖子被删**)。`article/<id>` 一项经 **ADR-0012「后续更正(2026-09-27)」再次更正**:实测**首跳 200、最终 URL 原地不变**(**不是** 302 迁到 `knowledge/<新id>`;早期那句"路径迁移"已被复测推翻——迁移仅观测到 1 次且不可复现),故按判定口径**可贴**。判定可点性的唯一可靠方法是看跟随重定向后的最终 URL(`url_effective`),不得只看 HTTP 状态码。
 - 故**引用形态已改为可点击角标** `[标题](https://vip.kingdee.com/knowledge/<id>)`,而**不是** `entityId + chunkId`。引用**优先用 `knowledge/`**;`question/`、`article/` 的 URL 会因删除/迁移失效,只写标题或注明可能失效。
 - 决策 3 的「输出时静态标注 `link_public: false`」以及 `document-chunks/{chunkId}` 补偿机制**均已作废**:该端点从未落地(官方无「按文档列全部 chunk」端点,chunkId 只能来自登录态),`kd read --chunk` 消费端已随去服务化删除。

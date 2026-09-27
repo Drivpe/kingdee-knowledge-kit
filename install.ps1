@@ -222,7 +222,7 @@ Write-Host ""
 Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd health                                # 内核自检(库模式:无服务、无端口)"
 Write-Host "  kd search ""信用额度控制"" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
-Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 自己拆好词传进去(跳过自动拆解)"
+Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 自己拆好词传进去(替代自动拆解,原句路仍会发)"
 Write-Host "  kd read <id> --kind answer               # 取全文,kind 照抄 search 结果的 type"
 Write-Host ""
 Write-Host "本套件不合成回答(ADR-0008,零模型依赖):kd search 只出清单,挑中的条目用 kd read 取全文,"

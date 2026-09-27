@@ -16,7 +16,7 @@
      `kd.core._impl()` 返回本包对象,测试/自检经它读内部件(守卫判据 7 逐项校验
      `cli.cmd_health` 依赖的名字仍可解析)。
      ⚠️ 正因如此,子模块**跨模块调用上游出口时必须经本包命名空间解析**
-     (见 `_manifest._indirect`),否则测试替换 `kd._impl._search_upstream` 注入故障
+     (见 `_manifest._resolve`),否则测试替换 `kd._impl._search_upstream` 注入故障
      会失效——原单文件实现里那种替换是生效的,拆分不得破坏它。
 
 子模块地图:
@@ -60,9 +60,10 @@ from ._config import (  # noqa: F401
 from ._net import _get_json, clamp_query  # noqa: F401
 from ._text import _is_true, _title_of, html2text  # noqa: F401
 from ._upstream import _URL_OF, _norm_item, _search_upstream  # noqa: F401
-from ._routes import _dedupe_routes, _plan_routes, _salient_chunks  # noqa: F401
+from ._routes import _dedupe_routes, _derive_product_id, _plan_routes, _salient_chunks  # noqa: F401
 from ._manifest import (  # noqa: F401
     _MAX_SCAN_PAGES,
+    _route_sorts_type,
     _manifest_fuse,
     _manifest_key,
     _manifest_project,

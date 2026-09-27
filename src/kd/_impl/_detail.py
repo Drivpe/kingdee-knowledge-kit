@@ -10,10 +10,6 @@ from ._net import _get_json
 from ._text import _is_true, html2text
 from ._upstream import _URL_OF
 
-# 详情并发度:answer 帖要展开多条回答,串行会是深读里最贵的一段。
-_DETAIL_WORKERS = 4
-
-
 def _knowledge_article(kid, budget=None, rate=None):
     d = _get_json(VIP + "/knowledgeapi/knowledge/" + str(kid), budget, rate)
     return {"ok": True, "id": str(kid), "type": "knowledge", "title": d.get("title"),

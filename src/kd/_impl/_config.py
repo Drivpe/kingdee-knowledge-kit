@@ -87,8 +87,13 @@ class _Budget:
 
     并发纪律(工单 #29):本类**全部**状态读写都在 `self._lock` 下进行。
     `acquire()` 把"检查余量"与"占用名额"合并为一次原子操作,消除
-    check-then-act 竞态——深读路径经 ThreadPoolExecutor 并发进入,若不原子则
-    多个线程可同时通过检查再各自自增,实际请求数溢出,`max` 就不再是硬上限。
+    check-then-act 竞态——若不原子,多个进入者可同时通过检查再各自自增,
+    实际请求数溢出,`max` 就不再是硬上限。
+    ⚠️ 归因更正(2026-09-27):本注释原写"深读路径经 ThreadPoolExecutor 并发进入",
+    但 `ThreadPoolExecutor` 随 `ask` 一并下线,全仓已无任何线程池
+    (`grep -rIn "ThreadPoolExecutor|concurrent" src/` 只剩注释本身)。
+    锁仍然是必要的:`_fetch_for_item` 等路径与调用方的并发调用仍会进入本类,
+    且"预算必须是硬上限"这一对外承诺不依赖某个特定并发实现而成立。
     """
 
     def __init__(self, max_upstream):

@@ -823,6 +823,265 @@ def t_effective_product_id_derived():
     ok(all(c["product_id"] == 87 for c in seenk), "keywords 路的过滤应与回显一致")
 
 
+@case("offline: 产品线推导两分支同权 —— keywords 入口不再绕过推导(缺陷 E)")
+def t_product_derivation_shared_exit():
+    """**缺陷 E 的回归钉子**(2026-09-27 修)。
+
+    实证:`_plan_routes` 的 `keywords` 分支**提前 return**,跳过了别名推导——
+    而这条分支恰好是"LLM 拆好词后传进来"的入口,即本轮新方向要走的那条路。
+    后果:问「苍穹 …」并把词拆好递进来,产品线回落成默认 93(旗舰版),
+    拿苍穹的问题去搜旗舰版资料再当苍穹答案输出(2026-09-06 串线事故的形态)。
+
+    契约:产品线推导是**两条分支共用的公共出口**(`_derive_product_id`),
+    `text` 相同则推出的产品线相同,与走哪条入口无关。
+    """
+    import kd._impl as _implpkg
+    plan = _implpkg._plan_routes
+    # 同一个含「苍穹」的整句,分别走两条入口,推导结果必须一致。
+    qtext = "苍穹 生产单位数量 分母变平方"
+    _r_kw, pid_kw = plan(text=qtext, keywords=["生产单位数量", "分母"])
+    _r_rule, pid_rule = plan(text=qtext, keywords=None)
+    ok(pid_kw == pid_rule == 87,
+       "keywords 入口与规则入口的产品线推导应同为 87(苍穹),实为 %r vs %r"
+       "——keywords 分支绕过推导会让 LLM 拆词入口静默串线" % (pid_kw, pid_rule))
+
+    # ⚠️ **第二条通道**(独立验证发现,2026-09-27 补修):只给 `--kw` 时 `text` 为空,
+    # 而第 1 个关键词**升格为原句路**(缺陷 D)。推导源若只看 `text` 就漏了它——
+    # 实测修前:`search --kw "苍穹 XXX"` → 93,而 `search "苍穹 XXX"` → 87。
+    # 同一个整句、两条命令行、产品线不同,且两者第 1 路 terms 逐字相同。
+    _r_only_kw, pid_only_kw = plan(text=None, keywords=[qtext, "分母"])
+    ok(pid_only_kw == 87,
+       "只给 keywords 时,升格为原句路的第 1 个关键词含「苍穹」应推出 87,实为 %r"
+       "——该通道是 SKILL.md 推荐的 LLM 拆词入口,漏推会让整轮静默用错产品线"
+       % (pid_only_kw,))
+
+    # ⚠️ **产品词不在第 1 个关键词里**(独立验证指出:仅用 keywords[0] 会漏推)。
+    # 这条是"推导源必须扫全部 keywords、而不只是 keywords[0]"的钉子——
+    # 实测把推导源改成 `text or keywords[0]` 后,本条会红(其余用例仍绿)。
+    _r_kw_any, pid_kw_any = plan(text=None, keywords=["生产单位数量", "苍穹"])
+    ok(pid_kw_any == 87,
+       "产品词在第 2 个关键词里也必须被扫到(不能只看 keywords[0]),实为 %r" % (pid_kw_any,))
+
+    # ⚠️ **优先级:text 里说的话 > 拆出的关键词片段**(独立验证建议的层级)。
+    # 若把各源拼成一维串再扫,本条会因 dict 序让「旗舰版」压掉 text 说的「苍穹」。
+    _r_prio, pid_prio = plan(text="苍穹 A", keywords=["A", "旗舰版"])
+    ok(pid_prio == 87,
+       "text 明确说「苍穹」时,不应被某个 --kw 里的「旗舰版」压掉(期望 87,实为 %r)"
+       "——拼成一维串会丢掉「谁说的」这层信息" % (pid_prio,))
+
+    # 反例对照:不含任何产品别名的问句应回落默认,证明上一条不是"恒等于 87"的假绿。
+    _r2, pid_none = plan(text="生产单位数量 分母变平方", keywords=["分母"])
+    ok(pid_none != 87,
+       "无产品别名的问句不应推出 87,实为 %r(该对照用来证明上一条断言有区分度)" % (pid_none,))
+
+    # ⚠️ **产品词在句中**(独立验证的 N15 变异逃逸发现):上面三条钉子的产品词**全在
+    # 源的开头**,于是把子串匹配收窄为 `startswith` 的变异能**全绿逃逸**。而
+    # 「查询苍穹的生产单位数量」是最自然的中文问句形态——产品词在句中。
+    # 补这条以封堵该逃逸面。
+    _r_mid, pid_mid = plan(text="查询苍穹的生产单位数量", keywords=None)
+    ok(pid_mid == 87,
+       "产品词出现在句中(非开头)也必须推出 87,实为 %r"
+       "——只匹配开头的实现会在此静默落回默认 93" % (pid_mid,))
+    _r_mid2, pid_mid2 = plan(text=None, keywords=["关于苍穹的插件问题", "分母"])
+    ok(pid_mid2 == 87,
+       "keywords 路的产品词在句中同样要推出 87,实为 %r" % (pid_mid2,))
+
+
+@case("offline: 多产品别名同现的裁决规则(先出现优先;不依赖配置顺序)")
+def t_multi_alias_arbitration():
+    """一个源里同时出现多个产品别名时的裁决规则。
+
+    **为什么需要这条规则**(独立验证的 N21 变异逃逸发现):原实现「取别名表的第一个命中」,
+    而别名表的顺序来自 `query_routes.json` 里 dict 的**字面量书写顺序**——那不是任何人
+    承诺过的契约。实测把遍历序反转,`"苍穹 旗舰版"` 的结果就从 93 变成 87,而**全部回归
+    依然全绿**(没有钉子守着)。而产品线判定直接决定召回语料(实测 87 与 93 在同类问句下
+    top10 零交集),故"靠配置顺序偶然固定"是不可接受的。
+
+    规则(2026-09-27 定):**取在文本中出现位置最靠前的别名**;位置相同取更长者。
+    选它的理由:不受别名长度偏置,且完全不依赖配置顺序。
+    """
+    import kd._impl as _implpkg
+    derive = _implpkg._derive_product_id
+    cases = (
+        # (来源文本, 期望产品线, 说明)
+        ("苍穹 旗舰版", 87, "「苍穹」在文本中更靠前"),
+        ("旗舰版 苍穹", 93, "「旗舰版」在文本中更靠前"),
+        ("企业版 苍穹", 1, "「企业版」更靠前"),
+        ("苍穹 星空企业版", 87, "「苍穹」更靠前"),
+        ("星空旗舰版", 93, "嵌套:外层长别名在位置 0,胜过其中的「旗舰版」"),
+        ("星空企业版", 1, "嵌套:外层长别名胜出"),
+    )
+    for src, want, why in cases:
+        got = derive([src], 93)
+        ok(got == want, "%r 应推出 %r(%s),实为 %r" % (src, want, why, got))
+
+    # 关键性质:**结果不依赖 alias 表的遍历序**。用反转后的别名表重跑,结果必须一致。
+    cp = _implpkg._impl if hasattr(_implpkg, "_impl") else None  # 占位,不使用
+    cfg = _implpkg._route_cfg()
+    aliases = ((cfg.get("productAliases") or {}).get("alias") or {})
+    ok(len(aliases) >= 2, "别名表需至少 2 条才能验证顺序无关性")
+    rev = dict(reversed(list(aliases.items())))
+    cfg.setdefault("productAliases", {})["alias"] = rev
+    try:
+        for src, want, _why in cases:
+            got = derive([src], 93)
+            ok(got == want,
+               "反转别名表后 %r 应仍推出 %r(结果不得依赖配置顺序),实为 %r"
+               % (src, want, got))
+    finally:
+        cfg["productAliases"]["alias"] = aliases  # 还原,避免污染后续用例
+
+
+@case("offline: _derive_product_id 的 sources 契约(误传字符串不静默降级)")
+def t_derive_sources_contract():
+    """`_derive_product_id(sources, …)` 的入参契约。
+
+    **为什么钉这条**(独立验证发现):签名从 `(text, product_id)` 改为
+    `(sources, product_id)` 后,**旧签名调用不报错、静默降级**——
+    `sources` 传字符串时 `for src in sources` 会**逐字符**迭代(`'苍'`、`'穹'`),
+    每个字符都不含多字别名,于是静默返回原值。无异常、无日志、无信号。
+    而全仓原本**没有任何测试直接调用该函数**,这条契约完全无保护。
+    """
+    import kd._impl as _implpkg
+    derive = _implpkg._derive_product_id
+    # 误传字符串:必须与传单元素列表同结果(就地归一),不得静默漏推。
+    ok(derive("苍穹", 93) == 87,
+       "sources 误传字符串时应就地归一(期望 87),实为 %r——逐字符迭代会静默漏推"
+       % (derive("苍穹", 93),))
+    ok(derive("苍穹", 93) == derive(["苍穹"], 93),
+       "字符串与单元素列表必须同结果")
+    # 边界:空源是否被正确跳过(不因空串而误判或崩溃)。
+    ok(derive([], 93) == 93, "空 sources 应原样返回,实为 %r" % (derive([], 93),))
+    ok(derive([None, "", "   "], 93) == 93,
+       "全空源应原样返回,实为 %r" % (derive([None, "", "   "], 93),))
+    # 显式值仍不被推导(与缺陷 F 同权,防止本用例与上一条互相掩盖)。
+    ok(derive("苍穹", 0) == 0 and derive("苍穹", 87) == 87,
+       "显式 0/87 不应被推导覆盖")
+
+
+@case("offline: 显式产品线不被问句字面覆盖(缺陷 F;--product 0 = 真不过滤)")
+def t_explicit_product_not_overridden():
+    """**缺陷 F 的回归钉子**(2026-09-27 修)。
+
+    语义边界:别名推导覆盖的是**默认兜底值**,不是调用方的明确选择。
+
+      修前实证:显式 `product_id=0`(spec 明定的"真不过滤")+ 问句含「苍穹」
+      → 回显 87。显式 0 是唯一能拿到不过滤的方式,被字面改成 87 就等于该语义消失,
+      违反 spec 第 8 条「要真正的不过滤必须显式传 --product 0」。
+
+    契约:只有 `None` / `93`(默认兜底)允许别名推导;任何其他显式值都尊重调用方。
+    这条同时是"调用层 LLM 自行判定产品线"的前提——内核不得用字面匹配二次改写它。
+    """
+    import kd._impl as _implpkg
+    plan = _implpkg._plan_routes
+    qtext = "苍穹 生产单位数量 分母变平方"
+    cases = (
+        ("显式 0(真不过滤)", 0, 0),
+        ("显式 87(苍穹)", 87, 87),
+        ("显式 1(企业版)", 1, 1),
+        ("显式 2(星空二开)", 2, 2),
+        ("默认兜底 93(允许推导)", 93, 87),
+        ("None(允许推导)", None, 87),
+    )
+    for label, given, want in cases:
+        _r, got = plan(text=qtext, keywords=None, product_id=given)
+        ok(got == want,
+           "%s: 传入 product_id=%r 应得 %r,实为 %r"
+           "——显式值被问句字面覆盖会让调用方的产品线判定失效" % (label, given, want, got))
+    # 反向对照:不含别名时,默认兜底 93 必须原样保留(推导不得凭空造值)。
+    _r, keep = plan(text="生产单位数量", keywords=None, product_id=93)
+    ok(keep == 93, "无别名时默认 93 应保留,实为 %r" % (keep,))
+
+
+@case("offline: routesDegraded 不因 max_routes 截断而假阳性(缺陷 G)")
+def t_routes_degraded_no_false_positive():
+    """**缺陷 G 的假阳性钉子**(2026-09-27 修)。
+
+    spec 第 3 节公式:`routesDegraded` = 「`queries[]` 去重后的实际路数 < 计划路数」。
+
+    修前实证:`max_routes=1` + 拆出两路同词 → 计划 1 路、去重后实际 1 路,
+    却仍回显 `routesDegraded=true`,且 scanNote 写出"计划 1 路,去重后实际 1 路"
+    ——两个数字相同却说塌缩,自相矛盾。真因:代码直接沿用了 `_dedupe_routes`
+    的布尔值(它报的是"拆解产出里有重复"),而不是按 spec 公式比较路数。
+
+    契约:截断不是塌缩。两个方向都要验——不该报的别报,该报的别漏。
+    """
+    # (a) 截断场景:max_routes=1,该词拆出 2 路同词 → 不得报塌缩。
+    r, _seen = _patched_search((PROBE_DEGRADED,), product_id=93, budget=10, max_routes=1)
+    ok(r["routesPlanned"] == 1, "max_routes=1 时计划路数应为 1,实为 %r" % (r["routesPlanned"],))
+    ok(len(r["queries"]) == 1, "max_routes=1 时应只有 1 路,实为 %r" % (r["queries"],))
+    ok(r["routesDegraded"] is False,
+       "max_routes=1 造成的截断不是塌缩(计划 1 路 = 实际 1 路),"
+       "routesDegraded 应为 False,实为 %r;scanNote=%r"
+       % (r["routesDegraded"], r["scanNote"]))
+    # scanNote 的自相矛盾是这条缺陷的可见症状,单独钉一次。
+    ok("塌缩" not in r["scanNote"],
+       "未塌缩时 scanNote 不得出现「塌缩」字样(修前会写成「计划 1 路,去重后实际 1 路」),实为 %r"
+       % (r["scanNote"],))
+
+    # (b) 真塌缩场景:不截断,该词确实拆出 2 路但去重后 1 路 → 必须报塌缩。
+    r2, _s2 = _patched_search((PROBE_DEGRADED,), product_id=93, budget=10)
+    ok(r2["routesPlanned"] >= 2, "该探针词去重前应≥2 路,实为 %r" % (r2["routesPlanned"],))
+    ok(len(r2["queries"]) < r2["routesPlanned"],
+       "塌缩场景实际路数应少于计划: %r vs %r" % (len(r2["queries"]), r2["routesPlanned"]))
+    ok(r2["routesDegraded"] is True,
+       "真塌缩必须仍报 true(修复不得过度修正),实为 %r" % (r2["routesDegraded"],))
+    ok("塌缩" in r2["scanNote"], "真塌缩时 scanNote 应写明,实为 %r" % (r2["scanNote"],))
+
+
+@case("offline: sortsType=0 不被 or 链吞掉(缺陷 H)")
+def t_sorts_type_zero_preserved():
+    """取路 sortsType 不得把显式的 `0` 折成 `1`。
+
+    旧写法 `int(r.get("sortsType") or sorts_type or 1)` 用 `or` 链,而 **0 是 falsy**:
+    路或调用方明确给 0(相关性排序)会被静默改成 1。
+
+    ⚠️ 性质说明(2026-09-27 实测):上游当前 sortsType=0 与 =1 **等价**(都是相关性
+    排序,2 才是时间倒序),故这是**潜伏 bug** 而非已发生的错误召回——现配置恒为 1,
+    恰好遮盖了它。但"显式值被静默改写且无任何信号"本身就是契约缺陷,故修之。
+    """
+    import kd._impl as _implpkg
+    f = _implpkg._route_sorts_type
+    cases = (
+        ("路自带 0 → 保住 0", {"sortsType": 0}, 1, 0),
+        ("路自带 2 → 2", {"sortsType": 2}, 1, 2),
+        ("路无值 + 调用方 0 → 保住 0", {}, 0, 0),
+        ("路无值 + 调用方 2 → 2", {}, 2, 2),
+        ("路无值 + 调用方 None → 默认 1", {}, None, 1),
+        ("路自带 0 优先于调用方 2", {"sortsType": 0}, 2, 0),
+    )
+    for label, route, fallback, want in cases:
+        got = f(route, fallback)
+        ok(got == want, "%s: 应得 %r,实为 %r" % (label, want, got))
+        ok(isinstance(got, int), "%s: 返回值应为 int,实为 %r" % (label, type(got)))
+
+    # ⚠️ **端到端钉子**:只钉函数体不够。独立验证(mutation testing)实测——把
+    # `_search_manifest` 里的**调用点**还原成旧写法 `int(r.get("sortsType") or … or 1)`
+    # 而保留正确的 `_route_sorts_type`,26 项回归**全绿**,而 0 又被吞。
+    # 纯函数级断言拦不住调用点回退,故必须断言"上游实收的 sorts_type"。
+    #
+    # ⚠️ 断言值按实测写(不是推的):原句路**固定 sortsType=1**(ADR-0009 定案,
+    # 它自己带 sortsType,故不受调用方入参影响),其余各路才吃调用方的值。
+    # 实测(PROBE_MULTI_ROUTE=「BOM 分母变平方」,6 路):
+    #   sorts_type=0 → [1, 0, 0, 0, 0, 0]    sorts_type=1 → [1, 1, 1, 1, 1, 1]
+    _r, seen = _patched_search((PROBE_MULTI_ROUTE,), product_id=93, budget=10, sorts_type=0)
+    ok(len(seen) >= 2, "本用例需要多路输入,实为 %d 路" % len(seen))
+    ok(seen[0]["sorts_type"] == 1,
+       "第 1 路(原句路)应固定 sortsType=1(ADR-0009),实为 %r" % (seen[0]["sorts_type"],))
+    ok(all(c["sorts_type"] == 0 for c in seen[1:]),
+       "调用方 sorts_type=0 必须原样到其余各路(不得被 or 链折成 1): %r"
+       % ([c["sorts_type"] for c in seen],))
+    # 反向对照:默认 1 时各路(含原句路)都应是 1 —— 证明上一条不是"恒等于 0"的假绿。
+    _r2, seen2 = _patched_search((PROBE_MULTI_ROUTE,), product_id=93, budget=10)
+    ok(all(c["sorts_type"] == 1 for c in seen2),
+       "默认 sorts_type 应为 1 并透传到每一路,实为 %r" % ([c["sorts_type"] for c in seen2],))
+    # 第三态:2(时间倒序)也必须原样透传。只钉 0 与 1 会漏掉"实现写成只认 0"这类回退
+    # (独立验证提示的覆盖缺口)。实测:各路为 [1, 2, 2, 2, 2, 2]。
+    _r3, seen3 = _patched_search((PROBE_MULTI_ROUTE,), product_id=93, budget=10, sorts_type=2)
+    ok(seen3 and all(c["sorts_type"] == 2 for c in seen3[1:]),
+       "调用方 sorts_type=2 应原样到其余各路,实为 %r" % ([c["sorts_type"] for c in seen3],))
+
+
 # ================= 联网组:真实上游(默认不跑) =================
 @case("online: 长度边界两侧(100 放行 / 101、120 本地拦下)", online=True)
 def t_length_boundary():
