@@ -79,7 +79,7 @@ def _guard(fn, op="search"):
         if read_op:
             _fail("upstream_error", "上游业务错误 errorCode=%s: %s" % (e.code, e.message),
                   hint="按 id 取全文时上游报错。常见原因:传的 id 与 kind 不匹配"
-                       "(answer 必须传 questionId 而非条目 id),或该实体已被上游删除/迁移。"
+                       "(kind 照抄清单条目的 type 字段),或该实体已被上游删除/迁移。"
                        "请回到 search 清单照抄条目的 id/type 后重试。",
                   example=_ex)
         _fail("upstream_error", "上游业务错误 errorCode=%s: %s" % (e.code, e.message),
@@ -95,10 +95,14 @@ def _guard(fn, op="search"):
 
 
 def cmd_search(a):
-    pack = _guard(lambda: core.search(a.text, keywords=a.kw, product_id=a.product,
-                                      page=a.page, page_size=a.size, global_=a.global_,
-                                      type_=a.type, max_routes=a.max_routes,
-                                      budget=a.budget))
+    # ⚠️ `--product` 不传时**不传该实参**,让内核用它自己的签名默认(= 声明里的
+    # 产品线默认编号)。不能写成 `product_id=a.product` + argparse default=None:
+    # 那会把"CLI 用户没传"表达成"显式 None",而显式 None 的语义是**不过滤**
+    # (内核值域三态,见 core.search docstring)——静默把默认过滤丢掉的正是这类错。
+    kw = {} if a.product is None else {"product_id": a.product}
+    pack = _guard(lambda: core.search(a.text, keywords=a.kw,
+                                      global_=a.global_, type_=a.type,
+                                      max_routes=a.max_routes, budget=a.budget, **kw))
     _prog("多路拆解 %d 路: %s" % (len(pack.get("queries") or []),
                                   " | ".join(str(q) for q in pack.get("queries") or [])))
     if pack.get("routesDegraded"):
@@ -118,7 +122,7 @@ def cmd_read(a):
         _fail("chunk_not_in_core", "--chunk(官方 AI 引用 chunkId 溯源)尚未并入 kd.core",
               hint="该能力未落地:官方无「按文档列出全部 chunk」端点,chunkId 只能来自登录态;"
                    "消费端已移除,当前无可用入口")
-    _out(_guard(lambda: core.read(a.kind, a.id), op="read"))
+    _out(_guard(lambda: core.read(a.kind, a.id, budget=a.budget), op="read"))
 
 
 def cmd_health(_a):
@@ -175,13 +179,13 @@ def build_parser():
     p.add_argument("--version", action="version", version="kd %s(library mode)" % _VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("search", help="唯一检索入口:多路拆词检索,只出标题清单"
+    s = sub.add_parser("search", help="唯一检索入口:多路拆词检索,只出帖级标题清单"
                                       "(每路 pageSize=10,按路序+上游原生序;要全文再用 kd read)",
                        epilog='示例:\n'
                               '  kd search "应用为禁用状态[网关]" --product 93   # 清单带 hitRoutes/routes\n'
                               '  kd search --kw "2510" --kw "应用为禁用状态[网关]" --product 93  # 稀有 token 抢第 1 路 + 原句保召回\n'
                               '  kd search --kw "信用额度" --kw "应收单 信用"     # 显式关键词(LLM 拆词入口;第 1 词充原句路)\n'
-                              '  kd search "信用额度控制" --type answer          # 类型过滤(每路各带,独立跨页扫描)\n'
+                              '  kd search "信用额度控制" --type question        # 类型过滤(每路各带,独立跨页扫描)\n'
                               '  kd search "信用额度控制" --max-routes 1         # 退化为单路(上游原生序)\n'
                               '  kd read 402990431979506944                      # 从清单里挑出的 id 再读全文',
                        formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -190,13 +194,10 @@ def build_parser():
     s.add_argument("--kw", action="append", default=None,
                    help="显式关键词(可重复,每词一路)——LLM 拆好词的入口。"
                         "原句路恒常存在:给了 text 由 text 充任,只给 --kw 时第 1 个 --kw 充任")
-    s.add_argument("--product", type=int, default=93,
-                   help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 0=不过滤(显式指定才生效)")
+    s.add_argument("--product", type=int, default=None,
+                   help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 2=星空侧二开问答专区 "
+                        "0=不过滤(显式指定才生效)。产品线由你判定;不传即默认,内核不做字面推导")
     s.add_argument("--type", choices=list(_VALID_KINDS), default=None, help="按实体类型过滤")
-    s.add_argument("--page", type=int, default=1,
-                   help="清单分页页码(作用于多路去重后的清单,非上游分页)")
-    s.add_argument("--size", type=int, default=10,
-                   help="清单每页条数(作用于清单,非上游分页;近上游默认 10)")
     s.add_argument("--max-routes", dest="max_routes", type=int, default=None,
                    help="最多用几路拆词(默认取 maxRoutes=7;1=单路精确)")
     s.add_argument("--global", dest="global_", action="store_true", help="跨全部产品")
@@ -206,18 +207,22 @@ def build_parser():
 
     s = sub.add_parser("read", help="取全文:先用 kd search 出清单,再 kd read 挑中的条目"
                                     ";--kind 照抄清单里的 type 字段"
-                                    "(knowledge=官方文档/answer=问答帖全文/article=社区文章)",
+                                    "(knowledge=官方文档/question=问答帖全文/article=社区文章)",
                        epilog='示例:\n'
                               '  kd read 402990431979506944                    # knowledge 条目 → 官方文档全文\n'
-                              '  kd read 799346568250934528 --kind answer      # answer 条目 → 问题+全部回答+追问链(传 questionId)\n'
+                              '  kd read 799346568250934528 --kind question    # question 条目 → 问题+全部回答+追问链(传帖子号)\n'
                               '  kd read 56784392135739905 --kind article      # article 条目 → 社区文章全文',
                        formatter_class=argparse.RawDescriptionHelpFormatter)
-    s.add_argument("id", help="search 结果条目的 id(answer 条目传其 questionId)")
+    s.add_argument("id", help="search 结果条目的 id(帖子级:问答条目传的就是帖子号)")
     s.add_argument("--kind", choices=list(_VALID_KINDS), default="knowledge",
                    help="实体类型,照抄 search 结果的 type 字段(默认 knowledge)")
     s.add_argument("--chunk", action="store_true",
                    help="按官方 AI 引用 chunkId 匿名读块全文(ADR-0007;该能力未落地,"
                         "当前无可用入口——执行时报错而非静默忽略)")
+    s.add_argument("--budget", type=int, default=None,
+                   help="上游请求硬上限覆盖;不传即不设限(read 的请求数随帖子长度变化,"
+                        "没有像样的固定默认档)。⚠️ 问答帖的深读可能多请求,"
+                        "给一个很小的值会得到 truncated 的部分结果")
     s.set_defaults(fn=cmd_read)
 
     s = sub.add_parser("health", help="内核自检(库模式:无服务、无端口、无 HTTP)",

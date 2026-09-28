@@ -21,12 +21,14 @@
 
 子模块地图:
   _errors    三个对外异常类(类对象身份被 kd.core 复用)
-  _config    单一真源常量、路由配置、预算、限速、上游计数、log
+  _config    单一真源常量、路由配置、契约声明(contract.json)、预算、限速、上游计数、log
   _net       上游 HTTP 出口(_get_json)、检索词硬闸(clamp_query)
   _text      html2text、标题降级链(_title_of)
   _upstream  上游检索调用与条目规范化(_norm_item)、链接模板(_URL_OF)
+             ⚠️ 上游 `answer` → 对外 `question` 的**唯一映射点**在这里
   _routes    拆解器(_plan_routes)、路去重(_dedupe_routes)
-  _manifest  多路清单执行链(唯一检索路径)
+             ⚠️ 产品线判定已于 2026-09-27 整体删除,product_id 直通
+  _manifest  多路清单执行链(唯一检索路径)、帖级归并(_manifest_merge)
   _detail    按 kind 读全文
   _public    公开面函数 search / read
 """
@@ -48,27 +50,44 @@ from ._config import (  # noqa: F401
     VIP,
     _Budget,
     _BudgetExhausted,
+    _CONTRACT,
+    _CONTRACT_PATH,
+    _FALLBACK_FORBIDDEN_KEYS,
+    # ⚠️ 兜底键集与 _CONTRACT 缓存对外导出是**刻意的**:回归用例要拿它们与声明做
+    # **交叉核对**(两边同源就恒等成立,见 t_contract_fallback_in_sync 的 2026-09-28 更正),
+    # 还要模拟"声明读不到"以验证兜底分支真的会生效。不导出等于那条断言只能自比。
+    _FALLBACK_RESULT_KEYS,
     _ROUTE_CFG_PATH,
     _RATE,
     _cfg_budget_search_max,
+    _contract,
     _rate_profile,
     _route_cfg,
     _up_now,
+    apply_link_policy,
     cfg_max_routes,
+    default_product_id,
+    link_for,
+    link_policy,
     log,
+    result_forbidden_keys,
+    result_keys,
+    top_keys,
 )
 from ._net import _get_json, clamp_query  # noqa: F401
 from ._text import _is_true, _title_of, html2text  # noqa: F401
-from ._upstream import _URL_OF, _norm_item, _search_upstream  # noqa: F401
-from ._routes import _dedupe_routes, _derive_product_id, _plan_routes, _salient_chunks  # noqa: F401
+from ._upstream import _URL_OF, _norm_item, _search_upstream, upstream_type_of  # noqa: F401
+from ._routes import _dedupe_routes, _plan_routes, _salient_chunks  # noqa: F401
 from ._manifest import (  # noqa: F401
     _MAX_SCAN_PAGES,
-    _route_sorts_type,
+    _PER_ROUTE_WANT,
     _manifest_fuse,
     _manifest_key,
+    _manifest_merge,
     _manifest_project,
     _manifest_rank,
     _route_search_once,
+    _route_sorts_type,
     _search_manifest,
 )
 from ._detail import (  # noqa: F401
@@ -77,7 +96,6 @@ from ._detail import (  # noqa: F401
     _answer_brief,
     _article_detail,
     _detail,
-    _fetch_for_item,
     _knowledge_article,
     _question_detail,
 )

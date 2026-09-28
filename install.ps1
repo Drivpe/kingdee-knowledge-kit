@@ -43,10 +43,15 @@ if (-not $DryRun) {
     $libDst = Join-Path $InstallRoot "lib\kd"
     if (Test-Path $libDst) { Remove-Item $libDst -Recurse -Force }
     Copy-Item (Join-Path $Repo "src\kd") (Join-Path $InstallRoot "lib\") -Recurse -Force
-    # 包内数据文件:拆解规则/预算/限速档。缺它内核会静默退回内置默认值——装出来的
-    # 行为与开发中的不是同一个东西(历史上漏拷过 query_routes.json 与 kd.py)。
-    if (-not (Test-Path (Join-Path $libDst "query_routes.json"))) {
-        Write-Host "[install] ✗ 缺 lib\kd\query_routes.json" -ForegroundColor Red; exit 1
+    # 包内数据文件:拆解规则/预算/限速档(query_routes.json)+ 对外契约声明(contract.json)。
+    # 缺任一个,内核会静默退回内置默认值——装出来的行为与开发中的不是同一个东西
+    # (历史上漏拷过 query_routes.json 与 kd.py)。
+    # ⚠️ 2026-09-28 修:此前注释说"检查两个数据文件",代码只查了 query_routes.json。
+    # contract.json 缺失时 health 冒烟不受影响(其键只有测试用),故必须在此显式校验。
+    foreach ($f in @("query_routes.json", "contract.json")) {
+        if (-not (Test-Path (Join-Path $libDst $f))) {
+            Write-Host "[install] ✗ 缺 lib\kd\$f" -ForegroundColor Red; exit 1
+        }
     }
 
     $launcher = @'
@@ -179,9 +184,12 @@ if (-not $NoSkills) {
 
 # 5. 装机自检:验「kd 可执行且真能跑通一条命令」。
 #    判据是 tests\kd_regression.py 的离线组(工单 #21;旧的 verify_ksearch.py 已随
-#    去服务化删除)——它既不联网也不需要服务,10 项全绿才放行。历史上安装器漏拷过
+#    去服务化删除)——它既不联网也不需要服务,全绿才放行。历史上安装器漏拷过
 #    query_routes.json 与 kd.py,装出「残废版」却毫无报错,这里就是那道闸。
 #    先补验装出来的那个 kd 本身能跑(回归脚本走仓库内核,不覆盖 bin\kd.cmd 装坏)。
+#    ⚠️ 公开面守卫 scripts\check_core_surface.py 已删除(决策 D2,2026-09-27):
+#    真正防静默失效的三条判据(版本单一真源 / health 依赖可解析 / kind 集合一致)
+#    已迁进回归离线组,故这里只需跑回归。
 if (-not $DryRun -and -not $NoVerify) {
     Step "冒烟验证:$Bin\kd.cmd health"
     if (Test-Path (Join-Path $Bin "kd.cmd")) {
@@ -201,15 +209,7 @@ if (-not $DryRun -and -not $NoVerify) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[install] ✗ 回归未全绿,检查上方 FAIL 项" -ForegroundColor Red; exit 1
     }
-    # 公开面守卫:回归测不到它要测的东西(t_public_surface 只查 hasattr,
-    # 而 _rrf_fuse 曾是 hasattr=True 的漏网名)。守卫此前只出现在 README 文字里、
-    # 无任何自动路径调用,故并入装机闸门——否则它等于不存在。
-    Step "公开面守卫:scripts\check_core_surface.py"
-    & $pyCmd (Join-Path $Repo "scripts\check_core_surface.py")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[install] ✗ 公开面守卫未通过(公开面/签名/版本/kind 集合有漂移)" -ForegroundColor Red; exit 1
-    }
-    Step "✓ kd 可执行且回归+守卫通过"
+    Step "✓ kd 可执行且回归通过"
 } elseif ($NoVerify) {
     Step "跳过装机自检(-NoVerify)"
 }
@@ -223,7 +223,7 @@ Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd health                                # 内核自检(库模式:无服务、无端口)"
 Write-Host "  kd search ""信用额度控制"" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
 Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 自己拆好词传进去(替代自动拆解,原句路仍会发)"
-Write-Host "  kd read <id> --kind answer               # 取全文,kind 照抄 search 结果的 type"
+Write-Host "  kd read <id> --kind question             # 取全文,kind 照抄 search 结果的 type"
 Write-Host ""
 Write-Host "本套件不合成回答(ADR-0008,零模型依赖):kd search 只出清单,挑中的条目用 kd read 取全文,"
 Write-Host "再由你按 docs/ANSWER-SPEC.md 自己合成。排序由上游综合排序决定,内核只去重、零评分。"

@@ -5,15 +5,73 @@
 `(text, keywords, product_id) → (routes[], product_id)` 对"规则实现"与
 "LLM 实现"都成立——LLM 拆词发生在**调用层**(Agent 拆好词后经 `keywords`
 传进 `search`),内核永不持有模型通道。
+
+⚠️ **产品线不在这里判定**(决策 D14,2026-09-27):本模块曾有一套
+`_derive_product_id`(别名表 + 推导源优先级 + "先出现优先"裁决规则),已**整体删除**
+——函数、别名表、裁决规则全删。理由是它猜的是一句话里有没有产品名,而这件事
+调用层比规则懂;且产品线判定错误等于拿完全不同的语料作答(实测同问句下
+`--product 87` 与 `93` 的 top10 **零交集**)。
+
+现在的口径:`product_id` **直通** —— 调用方传什么就是什么(不传即 `_config` 的
+默认 93),内核不再用字面匹配二次改写它。换线靠调用层自己发第二轮。
+`product_id=0` 仍是"真不过滤"(显式指定唯一途径)。
+
+⚠️ **稀有 token 路(T2,2026-09-28)**:规则路径会把问句里的**纯数字串**
+(≥3 位)单独拎成一路并**抢占第 1 路**,原句路退到第 2 路。这不是给 token 打分,
+是**路序**——排序键第一维是"首次出现的路序号"(ADR-0013,零算法排序不受影响)。
+判据与负结果见 `query_routes.json` 的 `tokenRoute` 段:**只认纯数字**,
+拉丁词与中文词一律不前置(实测 'BOM' 前置会把金标从第 2 挤到第 12)。
 """
 import re
 
 from ._config import UPSTREAM_TEXT_MAX, _route_cfg, cfg_max_routes
 from ._net import clamp_query
 
-# 展示序:截断时保席位的路种。产品词路携带 productIds 过滤、原句路携带完整语境,
-# 两者信息维度不可被片段路挤掉。
-_PINNED_KINDS = ("product", "raw:question", "raw")
+# 未截断时的**执行顺序**(= 最终路序 = 排序键第一维的来源)。
+# token 抢在第 1 位是本轮(T2)的核心行为变更;原句退到第 2 位但**不丢**。
+_EXEC_ORDER = {"token": 0, "raw:question": 1, "raw": 1, "product": 3}
+
+# 超出 max_routes 时的**截断优先级**(数字小者先留)。三个保席位路种:
+# 原句路携带完整语境、token 路携带唯一的收窄信号、产品词路携带 productIds 过滤,
+# 三者的信息维度都不可被片段路挤掉。
+# ⚠️ 与 _EXEC_ORDER **不是**同一张表,两者不得合并 —— 见 `_truncate_routes` 的论证:
+# 原句路按 ADR-0009 决策 3 必须在截断时优先于 token 路(改动前它就是这么被保住的,
+# 本轮不得破坏)。`raw` 是"拆解无命中"的兜底路,与原句路同权。
+_TRUNC_PRIORITY = {"raw:question": 0, "raw": 0, "token": 1, "product": 2}
+
+
+def _rare_token(text, cfg):
+    """问句里**唯一值得抢占第 1 路**的稀有 token;没有则返回 None(T2,2026-09-28)。
+
+    ⚠️ 只认**纯数字串**。这不是保守,是一条实测出来的负结果:
+
+      | 前置到第 1 路的词 | 上游 total | 金标 B 位次 |
+      |---|---|---|
+      | `2510`(错误码)   | 2      | **1**(从第 4 升上来) |
+      | `生产单位数量`(实体词) | 4506 | 2(未变) |
+      | `分母变平方`(症状词) | 22038 | 2(未变) |
+      | **`BOM`(拉丁缩写)** | 1308 | **12**(从第 2 掉下去) |
+
+    即:"某个拉丁词看起来像标识符"**不等于**"它比同问句里的其他路更能收窄候选集"
+    ——判断这件事需要语义,规则做不到。而**纯数字**形态在中文语料里几乎不碰撞
+    (实测 `2510` 把候选集从 4302 压到 2,四个数量级),是唯一被背书的前置形态。
+
+    同时**只取一个**:多 token 各自成路会互相挤掉席位(`maxRoutes` 有限),
+    而实测有效形态恰是"单一路只放它自己"。取问句里**首个**满足条件的数字串
+    ——错误码/单号通常唯一且写在最显眼处。
+
+    `minDigits` 挡掉 `1`/`02` 这类页数序号(实测这类词在语料里无区分度)。
+    """
+    tr = cfg.get("tokenRoute") or {}
+    if not tr.get("enabled", True):
+        return None
+    min_digits = int(tr.get("minDigits") or 3)
+    m = re.search(r"\d{%d,}" % min_digits, str(text or ""))
+    # 只取**首个**满足条件者,这是刻意的而非偷懒:实测有效形态就是"单一路只放它自己"
+    # (与原句/中文词合并会稀释 —— E8 实测合并后掉出前 30),而 `maxRoutes` 有限,
+    # 多 token 各自成路会互相挤掉席位。故**不提供"前置多个 token"的旋钮**:
+    # 一个跑不出来的配置项比没有这个配置项更糟(它承诺了一个不存在的行为)。
+    return m.group(0) if m else None
 
 
 def _salient_chunks(text, stopwords):
@@ -30,83 +88,22 @@ def _salient_chunks(text, stopwords):
     return out
 
 
-def _derive_product_id(sources, product_id):
-    """按**优先级顺序**扫各推导源 → 产品线 id(推导)。**两条入口共用**,是唯一落点。
-
-    `sources` 是**有序**字符串序列,靠前者更权威。调用方按"这句话是谁说的"排:
-    `text`(调用方明确给的整句)排在拆出来的关键词之前。
-
-    语义边界(2026-09-27 定案,修缺陷 E):
-      别名推导覆盖的是**默认兜底值**,不是调用方的明确选择。故:
-
-        * `None` / `93`(默认兜底)→ 问句出现别名时按别名推导(否则默认 93 会把
-          所有问句都当成旗舰版问题,2026-09-17 定案);
-        * `0`(显式真不过滤)→ **不被字面改写**。显式 0 是唯一能拿到不过滤的方式,
-          被问句里的「苍穹」二字改成 87 会让该语义消失(旧实现在 `text="苍穹 …"`
-          + `product_id=0` 时回显 87,违反 spec「显式 0 = 真不过滤」);
-        * 其他显式值(87 / 1 / 2 / 3 …)→ 尊重调用方,不被问句字面覆盖。
-          调用层(LLM)已自行判定产品线时,内核不再用字面匹配二次改写它。
-
-    ⚠️ 为什么必须收成公共出口:本函数此前**只在规则分支存在**,`keywords` 分支
-    提前 return 绕过了它——于是「给了整句 + 给了拆好的词」这条最自然的 LLM 用法
-    反而丢掉产品线推导(问句含「苍穹」却回显默认 93),拿苍穹的问题去搜旗舰版资料
-    再当苍穹答案输出(2026-09-06 串线事故的形态)。
-
-    ⚠️ 为什么要分优先级而不是拼成一个串(2026-09-27 补):拼成一维串会丢掉
-    "谁说的"这层信息——实测 `text="苍穹 A"` + `--kw A --kw 旗舰版` 拼串后推到 93,
-    而调用方在 text 里明确说了「苍穹」。产品线判定直接改变全部召回语料
-    (实测 87 与 93 在同一问句下 **top10 零交集**),故这层优先级有实际后果,不是洁癖。
-
-    ⚠️ 多别名同现的裁决规则(2026-09-27 定义,防"字典字面量顺序当契约"):一个源里
-    可能同时出现多个别名(「苍穹 旗舰版」)时,**取在文本中出现位置最靠前的那个**
-    (即"用户先说的更可能是主话题");位置相同则取更长者。
-    这条规则自然处理嵌套别名——`"星空旗舰版"` 里的 `"旗舰版"` 位置更靠后,故外层胜出。
-    定义它的理由:`query_routes.json` 的 dict 顺序**不是**任何人承诺的契约,而它是
-    产品线判定的唯一依据;若不定规则,任何一次 JSON 重排都会静默改变判定结果。
-    ⚠️ 这是**新定义的规则**,会改变少数组合的既有行为(实测 `"苍穹 旗舰版"` 原按表序
-    得 93,现得 87——因「苍穹」在文本中更靠前)。跨产品线同现的问句本身罕见,
-    两个方向都可辩护;此处选"先出现优先"是因为它**不受别名长度偏置**且不依赖配置顺序。
-    """
-    # 防呆:调用方误传字符串时,`for src in sources` 会**逐字符**迭代,每个字符都不含
-    # 多字别名 → 静默返回原值、无异常无日志。签名刚从 `(text, …)` 改成 `(sources, …)`,
-    # 迁移期这个形态最易出现,故就地归一而非静默降级。
-    if isinstance(sources, str):
-        sources = [sources]
-    if product_id not in (None, 93):
-        return product_id
-    cfg = _route_cfg()
-    aliases = ((cfg.get("productAliases") or {}).get("alias") or {})
-    for src in sources:
-        t = str(src or "")
-        if not t:
-            continue
-        # 先出现者优先;同一位置取更长者。不依赖 alias 表的遍历序。
-        best = None  # (位置, -长度, pid)
-        for name, pid in aliases.items():
-            n = str(name)
-            pos = t.find(n)
-            if pos < 0:
-                continue
-            key = (pos, -len(n))
-            if best is None or key < best[0]:
-                best = (key, pid)
-        if best is not None:
-            return best[1]
-    return product_id
-
-
 def _plan_routes(text=None, keywords=None, product_id=None):
     """一句话 → ≤maxRoutes 路检索词。返回 (routes, product_id)。
 
     两条入口:
       * `keywords` 显式给出 → 每词一路,替代全部自动拆解(调用层 LLM 拆词走这条);
         **原句路恒常存在**(2026-09-27):text 非空则由 text 充任,否则第 1 个 keyword 充任。
-      * 否则按规则拆:原句路 + 症状词路 + 字段/实体名词路 + 产品/上下文词路。
+      * 否则按规则拆:稀有 token 路(纯数字)+ 原句路 + 症状词路 + 字段/实体名词路
+        + 产品/上下文词路。
     规则数据全部在包内 query_routes.json,不在代码里。
 
     产品过滤:显式关键词路径与规则路径**同权**携带 productIds——
     否则显式关键词会绕过 --product 造成串线。
-    产品线推导亦同权:两条入口都过 `_derive_product_id`(缺陷 E)。
+
+    ⚠️ 产品线**原样直通**(决策 D14,2026-09-27):本函数**不再推导产品线**。
+    返回值第二个元素恒等于入参 `product_id`。调用层判定了产品线就显式传,
+    内核不再用问句字面覆盖它(详见模块 docstring)。
     """
     cfg = _route_cfg()
     max_routes = cfg_max_routes()
@@ -126,10 +123,6 @@ def _plan_routes(text=None, keywords=None, product_id=None):
                 kws.append(k)
         routes = []
         raw_text = str(text or "").strip()
-        # ⚠️ 推导源必须在 `kws.pop(0)` **之前**取(下方升格原句路会消费掉第一个)。
-        # 否则 text 为空时,升格为原句路的那个关键词恰好从推导源里消失——
-        # 而它正是"整句",产品词最可能就在它里面。
-        derive_sources = [raw_text] + list(kws)
         if raw_text:
             # text 非空 → 由它充任原句路(固定 sortsType=1,占第 1 路)。
             routes.append({"kind": "raw:question", "terms": clamp_query(raw_text, raw_max),
@@ -145,22 +138,8 @@ def _plan_routes(text=None, keywords=None, product_id=None):
         for k in kws:
             routes.append({"kind": "explicit", "terms": k, "why": "调用方显式关键词"})
         routes = routes[:max_routes]
-        # 产品线推导走**公共出口**(缺陷 E),推导源**按优先级**排列(缺陷 E 补修):
-        #   1. `text` —— 调用方明确给的整句,最权威;
-        #   2. 其余 `keywords` —— text 为空时第 1 个关键词已升格为原句路,故它也在其中。
-        # 两者都要看:`kd search --kw "苍穹 XXX"`(text 为空、整句在 keywords 里)
-        # 此前推出 93 而 `kd search "苍穹 XXX"` 推出 87——同句不同线,且两命令第 1 路
-        # terms 逐字相同。分优先级而非拼串,是为了保住"text 里说的话 > 拆出的片段":
-        # 否则 `text="苍穹 A"` + `--kw A --kw 旗舰版` 会因拼串丢掉 text 说的「苍穹」。
-        product_id = _derive_product_id(derive_sources, product_id)
-        if product_id and int(product_id) != 0:
-            for r in routes:
-                r["productIds"] = int(product_id)
-        return routes, product_id
+        return _stamp_product(routes, product_id), product_id
     text = str(text or "")
-    # 问句产品词优先于默认:默认 93(旗舰版)是"用户没说时的兜底",
-    # 不是"覆盖用户所说"。推导细节与边界见 `_derive_product_id` 的 docstring。
-    product_id = _derive_product_id([text], product_id)
     latin = []  # 扫描提取(中英混写无空格:"MRP运算""分母显示27000"里的 MRP/27000 也要拿到)
     for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9.%/_:-]*", text):
         if t not in latin:
@@ -174,6 +153,18 @@ def _plan_routes(text=None, keywords=None, product_id=None):
         raw_route = {"kind": "raw:question", "terms": clamp_query(text.strip(), raw_max),
                      "why": "原句路(相关性排序;片段路的词汇鸿沟无法覆盖时由此救回)",
                      "sortsType": raw_sorts}
+
+    # 0') 稀有 token 路(T2,2026-09-28):纯数字串独立成路并**抢占第 1 路**。
+    #     为什么值得动路序:排序键第一维是"首次出现的路序号",故"最能把候选集压窄的
+    #     那一路必须排在第 1 位"。实测同一组词仅换路序,[2510, 原句] 得第 1、
+    #     [原句, 2510] 得第 4。判据与负结果详见 `_rare_token`。
+    token_route = None
+    _tok = _rare_token(text, cfg)
+    if _tok:
+        token_route = {"kind": "token", "terms": clamp_query(_tok, raw_max),
+                       "why": "稀有 token 路(纯数字标识符:错误码/单号强收窄,"
+                              "实测候选集可压窄四个数量级)",
+                       "sortsType": raw_sorts}
 
     def take(term):
         used.add(term)
@@ -227,19 +218,56 @@ def _plan_routes(text=None, keywords=None, product_id=None):
     if not routes and not raw_route and text.strip():
         routes.append({"kind": "raw", "terms": clamp_query(text.strip(), raw_max),
                        "why": "拆解无命中,原句检索"})
+    # token 路插在**最前**(抢第 1 路),原句路退到第 2 路 —— 这是 T2 的核心行为变更。
+    # ⚠️ 原句路仍是 ADR-0009 的"恒常参与路",只是**排位**让给收窄能力最强的那一路;
+    #   它按 `_TRUNC_PRIORITY` 保席位(且截断时优先级高于 token 路),不会被截掉。
+    if token_route:
+        routes.insert(0, token_route)
     if raw_route:
-        routes.insert(0, raw_route)
+        routes.insert(1 if token_route else 0, raw_route)
+    _stamp_product(routes, product_id)
+    # 上限截断:按优先级保席位(token / 原句 / 产品词路都携带不可被片段路挤掉的维度),
+    # 具体优先级与论证见 `_truncate_routes`(**唯一实现**,不要让调用方另行切片)。
+    routes = _truncate_routes(routes, max_routes)
+    return routes, product_id
+
+
+def _stamp_product(routes, product_id):
+    """给每一路盖上产品线过滤(原地改,返回同一列表)。显式 0 / None = 不过滤。
+
+    两条入口(keywords 显式路径与规则路径)**共用本函数**,因为产品过滤必须对两条
+    路径**同权生效**——否则显式关键词会绕过 `--product` 造成串线(2026-09-06 事故形态)。
+
+    `product_id=0` 与 `None` 都是"真不过滤",必须**完全不写** `productIds` 键:
+    上游对 `productIds[0]=0` 会当真值过滤(实测把 Knowledge 挤出前排),
+    这是"不过滤"与"过滤到 0 号产品"的语义分界(见 `_search_upstream`)。
+    """
     if product_id and int(product_id) != 0:
         for r in routes:
             r["productIds"] = int(product_id)
-    # 上限截断:产品词路与原句路保席位(两者携带的信息维度不可被片段路挤掉)
-    if len(routes) > max_routes:
-        pinned = [r for r in routes if r["kind"] in _PINNED_KINDS]
-        rest = [r for r in routes if r["kind"] not in _PINNED_KINDS]
-        routes = rest[:max(0, max_routes - len(pinned))] + pinned
-        routes.sort(key=lambda r: (0 if r["kind"] == "raw:question" else
-                                   2 if r["kind"] == "product" else 1))
-    return routes[:max_routes], product_id
+    return routes
+
+
+def _truncate_routes(route_list, limit):
+    """把路数截到 `limit`,**按截断优先级**保席位。全仓唯一的路截断实现。
+
+    ⚠️ 为什么必须收在一处(2026-09-28,T2 修):截断在**两个地方**发生——
+      * `_plan_routes` 内部(拆解产出多于 `cfg_max_routes()` 时);
+      * `_search_manifest` 里按调用方的 `--max-routes` 再截一次(`route_list[:plan]`)。
+    后者是一句**前缀切片**,它保不保席位**完全取决于路序**。本轮把 token 路插到
+    第 1 位后,`--max-routes 1` 的前缀切片就切出了 token 路、把原句路静默删除——
+    **击穿了 ADR-0009 决策 3**(「原句路保席位,截断时不被挤掉」)。
+
+    即:"截断优先级"与"执行顺序"是**两张不同的表**,而前缀切片把两者混为一谈。
+    本函数把优先级判据收成唯一实现,两个截断点都调它,不再各写一次。
+
+    截断优先级:`原句 → token → 其余 → product`(原句最高,依 ADR-0009 决策 3)。
+    返回**按执行顺序**排好的列表(截断后的相对路序不变,便于调用方直接执行)。
+    """
+    if limit is None or len(route_list) <= limit:
+        return list(route_list)
+    keep = sorted(route_list, key=lambda r: _TRUNC_PRIORITY.get(r["kind"], 2))[:limit]
+    return sorted(keep, key=lambda r: _EXEC_ORDER.get(r["kind"], 2))
 
 
 def _dedupe_routes(route_list):

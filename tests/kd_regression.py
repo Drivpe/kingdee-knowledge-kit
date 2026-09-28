@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
-"""kd 回归用例集(单入口检索重构后重定档,2026-09-18)。
+"""kd 回归用例集(契约重构后重定档,2026-09-27)。
 
-定位:证明「收敛成一条检索链路之后,以前能干的事现在还能干」——只断言**外部行为**
+定位:证明「改完契约之后,以前能干的事现在还能干」——只断言**外部行为**
 (kd.core 公开面返回结构 + kd 命令的进程级输出/退出码),不断言内部函数名、
-模块结构、HTTP 状态码。唯一契约真源:
-`docs/specs/2026-09-18-单入口检索重构.md`(尤其第 2、3、9 节)。
+模块结构、HTTP 状态码。契约真源:`docs/contract-*.md` 之外,字段集的单一来源是
+**包内 `src/kd/contract.json`**(本套件从它派生断言,不再手写第二份)。
 
-本轮改动(相对上一版 工单 #21 基线):
-  * `ask` 及全部 `t_ask_*` 用例删除(用户 2026-09-18 拍板:留 search,ask 全删);
-    连带删除 ASK_KEYS / ASK_NEW_KEYS / BRIEF_KEYS / SOURCE_KEYS / DETAIL_* /
-    CHUNK_KEYS 等 ask 专属契约常量。
-  * `search` 契约按 spec 第 3 节重写:顶层 **16 键**(新增 keywords / routesPlanned /
-    routesDegraded;`effectiveProductId` 系执行期裁决补入,见 spec 第 3.3 节)、
-    `results[]` 16 字段(新增 adopted / answersCount / comments / supports /
-    questionBody);`contentText` / `fusedScore` / `chunks` / `contentLen` /
-    `useful` **出现即 FAIL**。
-  * 排序契约反转:`hitRoutes` 从"排序主键"**降级为纯信息字段**。内核只去重,
-    顺序 = (首次出现的路序号, 该路内上游名次)。旧的 `t_search_manifest_order`
-    (断言 hitRoutes 单调降序)与新契约直接冲突,已删除并替换为路序断言。
-  * 新增硬证据用例:keywords 入口 / routesDegraded 塌缩 / `--global` 透传 /
-    排序键不含命中路数 / `kd ask` 进程级 exit 2。
-  * 离线内部件用例改走新包路径:实现体由模块 `kd._core_impl` 变为包 `kd._impl`,
-    但观测口口径不变(`core._impl()` 仍返回承载实现的对象,内部件由其再导出)。
+本轮改动(相对上一版 2026-09-18 单入口重构基线):
+  * **清单粒度反转**(ADR-0014,决策 D4/D6):去重与条目从**回答级**改为**帖子级**
+    ——同一帖的多条回答**被合并为一条**,条目 `id` 就是帖子号,`questionId` 字段删除。
+    旧用例 `t_manifest_answer_id_space`(断言"同帖不同回答不被合并")**与新契约直接冲突,
+    已整体改写为相反方向的断言**——保留它就是钉住一个已被用户拍板撤销的行为。
+  * **`answer` → `question` 全量改名**(决策 D5):上游协议里的 `entity-type` 仍是
+    `"Answer"`(映射只在 `_upstream._norm_item` 一处),对外一律 `question`。
+  * **字段集收敛并改为声明派生**(决策 D8/D10/D13):顶层 16 → 13(砍 page/pageSize/
+    totalPages)、条目 16 → 13(砍 questionId/views/updatedAt);`SEARCH_KEYS`/
+    `RESULT_KEYS`/`RESULT_FORBIDDEN_KEYS` 全部从 `contract.json` 派生。
+    ⚠️ 派生的是**字段名,不是"应该有几个"**:断言写成双向(返回键集 ⊆ 声明允许 且
+    ⊇ 声明必含),这样既不用手写 16,又能同时抓到"多出字段"与"少了字段"。
+  * **产品线字面推导整体删除**(决策 D14):`_derive_product_id` 及其别名表/裁决规则
+    删除,`product_id` 直通。相关三个用例(`t_product_derivation_shared_exit` /
+    `t_multi_alias_arbitration` / `t_derive_sources_contract`)随之删除——
+    它们钉的机制已不存在,留着只会把"函数没了"误报成回归失败。
+    取代它的是 `t_product_id_passthrough`:product_id 恒等于调用方传入值。
+  * **清单分页删除**(决策 D10):`--page`/`--size` 与 `page`/`page_size` 形参一并移除,
+    分页相关用例删除。
+  * **接管守卫三条判据**(决策 D2/D3):版本号单一真源 / `health` 内部件依赖可解析 /
+    kind 集合三源一致 —— 原由 `scripts/check_core_surface.py` 承担,该脚本整体删除。
 
 运行:
   python3 tests/kd_regression.py            # 离线组(默认;不联网,无网络也全绿)
@@ -32,16 +37,8 @@
   0 = 全部通过
   1 = 有失败
 
-历史上本套件区分过「已知 src 缺陷」与「真实回归失败」两类,并提供一个
-`--allow-known-defect` 开关放行前者。该机制已随其唯一服务对象被移除:它记载的
-`_Budget.require()`/`spend()` 两步非原子竞态已由工单 #29 修复(现为单个持锁的
-`acquire()`,见 src/kd/_impl/_config.py `_Budget`)。机制比缺陷活得久,会让退出码
-语义继续宣告一个不存在的问题类别,故整体删除——每个失败都返回 1。
-
 联网组单独归组、默认不跑:上游是真实网络请求(匿名链路,间隔 ≥1s),离线可验的
 结构契约不应因为上游抖动而变红。
-
-不碰 tests/verify_ksearch.py(旧套件保留到 #22)。
 """
 import json
 import os
@@ -60,46 +57,71 @@ PY = sys.executable
 RUN = os.path.join(SRC, "kd_run.py")
 
 # ---------------------------------------------------------------- 契约基线
-# 全部常量按 spec(2026-09-18 单入口检索重构)第 3 节冻结。任何一条与 spec 冲突
-# 的改动都必须在 spec 里先落字,再改这里——不得只改测试。
+# ⚠️ **字段集不再手写在这里**(决策 D13):单一来源是包内 `src/kd/contract.json`,
+# 代码读它拼返回体、本套件从它派生断言、文档指向它。手写第二份就是"抄六遍"的病根
+# ——不改就没痛,只在改动那一刻出事,而那一刻没有任何信号
+# (活证据:SKILL.md:245 与 ANSWER-SPEC:23 的链接口径正面对撞)。
+_CONTRACT = json.loads(
+    open(os.path.join(SRC, "kd", "contract.json"), encoding="utf-8").read())
 
-# search 顶层 **16 键**(spec 第 3 节逐字段冻结)。
-# 排序键 (首次路序, 路内名次) 使 `routesPlanned`/`routesDegraded` 成为新字段:
-# 前者是"计划路数"(受 max_routes 截断后),后者是"路数塌缩"的事实表达(缺陷 C)。
-# `effectiveProductId` 系**执行期裁决补入**(spec 第 3.3 节,2026-09-18):
-# 本源设计漏列该键,走查发现它是真实功能回退——该键原为 ask 独有,ask 删除后
-# 调用方失去唯一**可执行**的产品线判据(ANSWER-SPEC 第 8 条依赖它;它与 --product
-# 同值域的整数,可直接比对;results[].products 是中文类目名,值域不可比、不能替代)。
-SEARCH_KEYS = {"ok", "text", "keywords", "total", "queries", "routesPlanned",
-               "routesDegraded", "effectiveProductId", "page", "pageSize", "totalPages",
-               "results", "routeErrors", "budget_exhausted", "scanNote", "stats"}
+# search 顶层键集(spec 第 3 节口径,现由声明承载)。
+SEARCH_KEYS = set(_CONTRACT["search"]["topKeys"])
 
-# results[] 条目 16 字段(spec 第 3.1 节逐字段冻结)。
-# `adopted`/`answersCount`/`comments`/`supports`/`questionBody` 是**上游原生信号**
-# (由 `_norm_item` 算出,投影时透传),不是内核算的分——它们的存在不违反"零算法排序"。
-RESULT_KEYS = {"type", "id", "title", "url", "hitRoutes", "routes", "questionId",
-               "snippet", "products", "views", "updatedAt", "adopted",
-               "answersCount", "comments", "supports", "questionBody"}
+# results[] 条目键集:清单是标题级投影,这里列的是**允许出现的全集**。
+RESULT_KEYS = set(_CONTRACT["search"]["resultKeys"])
 
-# 历史残留字段:清单是标题级投影,这些**出现即 FAIL**(spec 第 3.1 节末)。
+# ⚠️ **冻结基线(2026-09-28,T4)** —— 这是"对外字段契约"的**独立**一份,
+# **刻意不派生自 contract.json**,理由是一条实测出来的自环:
+#
+#   旧口径下,`t_search_contract` 与 `t_manifest_projection` 都从 `contract.json`
+#   派生期望,而被测代码(`_manifest_project` 经 `result_keys()`)也读**同一个文件**。
+#   于是比对的两端同源,恒等成立。实测(2026-09-28):
+#
+#     | 注入                                       | 旧回归结果 | 真实输出        |
+#     |--------------------------------------------|-----------|-----------------|
+#     | 从 contract.json 的 resultKeys 删 `products` | 35/35 全绿 | 真的少了一个字段 |
+#     | 代码侧新增 `productsV2`、声明不动            | 35/35 全绿 | ——              |
+#
+#   这是**回声与回声自比**:两个方向都抓不住,却让后人以为有保护——比没有检查更贵
+#   (没有检查时人会小心;有一个永远绿的检查,改配置的人会以为"测试过了,没事")。
+#
+# 冻结基线的作用就是**打断这个自环**:它是一份不随 contract.json 漂移的独立期望。
+# 改对外字段集时**必须**同时改这里——这道摩擦是有意的("改契约必须有人看见")。
+#
+# 三条断言合起来才有覆盖(见 `t_result_keys_vs_real_output`):
+#   ① 声明 == 冻结基线        → 抓「声明漂移」
+#   ② 真实输出 == 声明        → 抓「代码与声明脱节」
+#   ③ 故障注入证明 ①② 真的会红  → 抓「断言本身退化成重言式」
+FROZEN_RESULT_KEYS = ("type", "id", "title", "url", "hitRoutes", "routes", "snippet",
+                      "products", "adopted", "answersCount", "comments", "supports",
+                      "questionBody")
+FROZEN_TOP_KEYS = ("ok", "text", "keywords", "total", "queries", "routesPlanned",
+                   "routesDegraded", "effectiveProductId", "results", "routeErrors",
+                   "budget_exhausted", "scanNote", "stats")
+
+# 历史残留字段:清单是标题级投影,这些**出现即 FAIL**。
 #   contentText / contentLen —— 清单只给标题级信息,全文走 read;
 #   fusedScore               —— 随 ask 一并删除的算法评分;
 #   chunks                   —— 只服务 ask 深读;
-#   useful                   —— 未列入清单字段。
-RESULT_FORBIDDEN_KEYS = {"contentText", "fusedScore", "chunks", "contentLen", "useful"}
+#   useful                   —— 未列入清单字段;
+#   views / updatedAt        —— 2026-09-27 砍(ANSWER-SPEC 与 SKILL 里零用途说明);
+#   questionId              —— 2026-09-27 砍(帖级化后 id 就是帖子号)。
+RESULT_FORBIDDEN_KEYS = set(_CONTRACT["search"]["resultForbiddenKeys"])
 
 # read:ok, id, type, title, contentText, url, products, updatedAt, stats(已摘 landing)。
 READ_KEYS = {"ok", "id", "type", "title", "contentText", "url", "products", "updatedAt", "stats"}
-# read(answer) 专有字段(spec 第 4 节:answer 另带一组)。
+# read(question) 专有字段(spec 第 4 节:问答帖另带一组)。
 # EXTRA = **可出现的键集**(白名单上界);REQUIRED = **恒在的键集**(必含下界)。
-# 两者的差集 {questionId, bestAnswer, answers, truncated} 是条件字段:
+# 两者的差集 {bestAnswer, answers, truncated} 是条件字段:
 #   bestAnswer/answers 依赖上游是否给了采纳回答/答案列表;
-#   truncated 只在发生截断时置位;questionId 该路径从不返回(见用例内说明)。
-READ_ANSWER_EXTRA_KEYS = {"questionId", "isSolved", "answersCount", "views", "rewardCoins",
-                          "createdAt", "bestAnswer", "answers", "truncated",
-                          "answersTaken", "answersTotal"}
-READ_ANSWER_REQUIRED_KEYS = READ_ANSWER_EXTRA_KEYS - {"questionId", "bestAnswer",
-                                                      "answers", "truncated"}
+#   truncated 只在发生截断时置位。
+READ_QUESTION_EXTRA_KEYS = {"isSolved", "answersCount", "views", "rewardCoins",
+                            "createdAt", "bestAnswer", "answers", "truncated",
+                            "answersTaken", "answersTotal"}
+READ_QUESTION_REQUIRED_KEYS = READ_QUESTION_EXTRA_KEYS - {"bestAnswer", "answers", "truncated"}
+
+# 产品线默认编号(从声明取;不传 --product 时生效)。
+DEFAULT_PRODUCT_ID = int(_CONTRACT["productIds"]["default"])
 
 # stats 只断"旧 HTTP 路径字段不得回归"(pipeline);upstreamCalls/elapsedMs
 # 由各用例就地断言。
@@ -114,7 +136,7 @@ SEARCH_TOTAL_DRIFT_TOL = 0.02  # 2%:语料增删的常态波动区间
 
 # 实证探针词(各用例共用,避免散落的魔法字符串):
 #   塌缩实证:`信用额度控制` 的原句路与产品路拆出**逐字相同**的 terms(缺陷 C);
-#   多路实证:`BOM 分母变平方` 稳定出 6 路,清单足够深、可分页、可有失败路。
+#   多路实证:`BOM 分母变平方` 稳定出 6 路,清单足够深、可有失败路。
 PROBE_DEGRADED = "信用额度控制"
 PROBE_MULTI_ROUTE = "BOM 分母变平方"
 
@@ -218,6 +240,291 @@ def t_dead_params_gone():
         except Exception as e:
             raise Fail("%s 抛 %s(应为 TypeError:形参已删除)" % (label, type(e).__name__))
         raise Fail("%s 未报错——死形参仍在签名里(应已删除)" % label)
+
+
+@case("offline: 清单分页形参已删除(search/CLI 传 page/size 即 TypeError/exit 2)")
+def t_pagination_gone():
+    """**删除的回归钉子**(决策 D10,2026-09-27):清单分页整体移除。
+
+    删的是三处一致的口径,缺一处就会留下"能传但无效"的幽灵参数:
+      ① `core.search` 的 `page` / `page_size` 形参 → 传即 TypeError;
+      ② CLI 的 `--page` / `--size` → argparse 直接 exit 2(未知参数);
+      ③ 返回顶层不再有 `page`/`pageSize`/`totalPages`。
+
+    为什么值得钉:分页曾是"清单能翻到第 2 页"这条承诺的实现;若将来有人只把
+    形参补回签名(而执行链不再消费它),调用方会以为能翻页却永远拿到同一批
+    ——静默失效比报错更贵,故三层一起钉。
+    """
+    for label, fn in (("search(page=2)", lambda: core.search(QUERY, page=2)),
+                      ("search(page_size=5)", lambda: core.search(QUERY, page_size=5))):
+        try:
+            fn()
+        except TypeError:
+            continue
+        except core.InternalError:
+            raise Fail("%s 抛 InternalError 而非 TypeError(形参仍被接受)" % label)
+        except Exception as e:
+            raise Fail("%s 抛 %s(应为 TypeError:形参已删除)" % (label, type(e).__name__))
+        raise Fail("%s 未报错——分页形参仍在签名里(应已删除)" % label)
+    # CLI 侧:argparse 未知参数 → exit 2,且 stdout 不得出现成功载荷。
+    for flag, val in (("--page", "2"), ("--size", "5")):
+        code, d, err = cli("search", QUERY, flag, val)
+        ok(code == 2, "kd search %s 应 exit 2(argparse 未知参数),实测 %r" % (flag, code))
+        ok(err and err.strip(), "kd search %s 的 stderr 为空:用法提示被吞掉" % flag)
+        if d is not None:
+            ok(d.get("ok") is not True, "kd search %s 竟返回成功载荷: %r" % (flag, d))
+    # 顶层键集不含分页字段(声明侧,零上游请求:超长查询走错误路径)。
+    ok("page" not in SEARCH_KEYS and "pageSize" not in SEARCH_KEYS
+       and "totalPages" not in SEARCH_KEYS,
+       "声明里仍有分页字段: %s" % sorted(SEARCH_KEYS))
+
+
+# ============ 离线组:接管自 check_core_surface.py 的三条判据 ============
+# 原 `scripts/check_core_surface.py`(465 行、10 条判据)已整体删除(决策 D2)。
+# 其余判据由本套件与"只用一次的两个函数"兜住,但有**三条判据真的防静默失效**
+# (全是一次一构的类型级退化,正常改动触碰不到),故迁进这里。迁入时保持判据
+# 原意,只把取数方式改成"读源码/读声明",不新增第二份真相。
+
+@case("offline: 版本号单一真源(实现体 VERSION → 其余四处派生)")
+def t_version_single_source():
+    """五处版本号必须同源:实现体 `VERSION` 是唯一出处,其余四处由它派生。
+
+    抓的是"五份字面量各自演化"这一类漂移——实测曾出现
+    `6.2 / 0.1.0 / 6.2 / 6.2.0` 四处不一致,而 `pipx install` 会把 `__version__`
+    当成发布版本号;`plugin.json` 是对外决定技能包版本的那一处,长期未纳入任何守卫。
+
+    比较口径:pyproject 与 plugin.json 用三段(PEP 440 / 插件清单惯例),
+    实现体用两段,故只比"前两段"是否一致;`__init__.__version__` 与 `cli._VERSION`
+    必须与实现体**逐字**相等。
+    """
+    import importlib
+    impl = importlib.import_module("kd._impl")
+    pkg = importlib.import_module("kd")
+    cli_mod = importlib.import_module("kd.cli")
+    want = getattr(impl, "VERSION", None)
+    ok(want, "实现体缺少 VERSION 常量(单一真源不存在)")
+    ok(getattr(pkg, "__version__", None) == want,
+       "kd.__version__=%r != VERSION=%r" % (getattr(pkg, "__version__", None), want))
+    ok(getattr(cli_mod, "_VERSION", None) == want,
+       "cli._VERSION=%r != VERSION=%r" % (getattr(cli_mod, "_VERSION", None), want))
+    # 另两处只认本项目的一行写法(不引第三方 toml/yaml 解析)。
+    import re
+    got_pyproject = None
+    with open(os.path.join(REPO, "pyproject.toml"), encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r'\s*version\s*=\s*["\']([^"\']+)["\']', line)
+            if m:
+                got_pyproject = m.group(1)
+                break
+    ok(got_pyproject is not None, "读不到 pyproject.toml 的 version(格式变了?)")
+    ok(str(got_pyproject).split(".")[:2] == str(want).split(".")[:2],
+       "pyproject version=%r 前两段 != VERSION=%r" % (got_pyproject, want))
+    plugin_path = os.path.join(REPO, "skills", "kingdee-knowledge",
+                               ".claude-plugin", "plugin.json")
+    with open(plugin_path, encoding="utf-8") as f:
+        got_plugin = (json.load(f) or {}).get("version")
+    ok(got_plugin is not None, "读不到 plugin.json 的 version(该文件决定技能包版本)")
+    ok(str(got_plugin).split(".")[:2] == str(want).split(".")[:2],
+       "%s version=%r 前两段 != VERSION=%r" % (plugin_path, got_plugin, want))
+    # query_routes.json 的 version 是**配置格式版本**(v6.4),与套件版本同源推进,
+    # 但字面形态不同(v 前缀 + 两段),故单独按两段比对。
+    with open(os.path.join(SRC, "kd", "query_routes.json"), encoding="utf-8") as f:
+        cfgv = (json.load(f) or {}).get("version")
+    ok(cfgv, "query_routes.json 缺 version 字段")
+    ok(str(cfgv).lstrip("v").split(".")[:2] == str(want).split(".")[:2],
+       "query_routes.json version=%r 与 VERSION=%r 不同源" % (cfgv, want))
+
+
+@case("offline: health 内部件依赖可解析(观测口不失效)")
+def t_health_impl_deps_resolvable():
+    """`cli.cmd_health` 经观测口读取的每个内部件,必须仍在实现包里可解析。
+
+    抓的是"内部件被删/改名 → health 静默崩、而其它断言照样绿"这一类漂移。
+    依赖清单**从 cmd_health 源码里提取**(不手写第二份真相,避免清单自身腐烂);
+    三种失败任一即红:
+      a. 读不到 cli.py 或定位不到 cmd_health(函数被改名/删除);
+      b. 函数体内没有任何 `_cp.<name>` 引用(取数被抽走);
+      c. 清单非空但有条目在实现体里已失联(health 会崩)。
+
+    ⚠️ 已知局限(明确接受,原文照迁):只认 `_cp.<identifier>` 字面量,
+    经局部变量转手或 `getattr` 拼接的间接引用抓不到。这类漏只表现为"少一条钉子"
+    (漏报),不会把健康的 health 判成坏。
+    """
+    import re
+    cli_path = os.path.join(SRC, "kd", "cli.py")
+    with open(cli_path, encoding="utf-8") as f:
+        text = f.read()
+    m = re.search(r"def cmd_health\(.*?(?=\ndef |\Z)", text, re.S)
+    ok(m, "无法从 %s 定位 cmd_health(函数被改名/删除?)" % cli_path)
+    deps = sorted(set(re.findall(r"_cp\.([A-Za-z_][A-Za-z0-9_]*)", m.group(0))))
+    ok(deps, "cmd_health 已定位,但函数体内没有任何 `_cp.<name>` 引用"
+             "(取数逻辑被抽走/前缀被改)——否则本判据形同虚设")
+    impl = _impl()
+    missing = [n for n in deps if not hasattr(impl, n)]
+    ok(not missing, "health 依赖的内部件已失联: %s(health 运行时会崩,"
+                    "须在实现体里补回或改 cmd_health)——依赖清单 %r"
+       % (", ".join(missing), deps))
+
+
+@case("offline: kind 集合三源一致(ENTITY_KINDS / _DETAIL_KINDS / CLI 白名单)")
+def t_kind_consistency():
+    """`kind` 集合必须**三处同集合**,且 CLI 不得复制裸字面量。
+
+    抓的是"read 的 --kind 白名单 / search 的 --type 白名单 / 详情分发表三份字面量
+    不同源"——历史上分发表有 4 个 kind 而公开白名单只有 3 个,加删 kind 不会被
+    任何断言发现。
+
+    ⚠️ 本轮口径变化(决策 D5):集合的第三个值是 `question`(不是 `answer`)。
+    CLI 侧不 import(有 argparse 副作用),改用正则读源——与 health 判据同纪律。
+    """
+    import re
+    impl = _impl()
+    entity = getattr(impl, "ENTITY_KINDS", None)
+    detail = getattr(impl, "_DETAIL_KINDS", None)
+    ok(entity and detail, "实现体缺 ENTITY_KINDS 或 _DETAIL_KINDS")
+    ok(set(entity) == set(detail),
+       "ENTITY_KINDS=%r != _DETAIL_KINDS=%r(改 kind 只改了一处)" % (entity, detail))
+    # 新集合必须就是 question 那一套——顺带钉住"没被悄悄改回 answer"。
+    ok(set(entity) == {"knowledge", "question", "article"},
+       "kind 集合应为 {knowledge, question, article}(决策 D5),实为 %r" % (sorted(entity),))
+    cli_path = os.path.join(SRC, "kd", "cli.py")
+    with open(cli_path, encoding="utf-8") as f:
+        text = f.read()
+    literal = re.search(r'\(\s*"knowledge"\s*,\s*"question"\s*,\s*"article"\s*\)', text)
+    ok(not literal,
+       "cli.py 里仍有裸 kind 字面量(第 %d 字符处)——应从 _IMPL.ENTITY_KINDS 取"
+       % (literal.start() if literal else 0))
+    ok("ENTITY_KINDS" in text, "cli.py 未引用 ENTITY_KINDS(白名单与实现体脱钩)")
+
+
+@case("offline: 类型过滤词汇双向映射(对外 question ↔ 上游 Answer)")
+def t_type_vocab_mapping():
+    """`type_` 过滤必须把**对外词汇**翻成**上游词汇**再比较,两个方向都要对。
+
+    ⚠️ 这条是**实测暴露的真实缺陷**留下的钉子(2026-09-27):
+    改名 `answer` → `question` 时,`_norm_item`(收响应时的翻译)改了,
+    但 `_route_search_once.collect` 里做过滤比较的那一处**没跟上**——它拿对外的
+    `"question"` 去比上游返回的 `"Answer"`,`et != "question"` 恒真 →
+    **每一条都被丢弃,清单空、total 正常、无任何报错**。
+    这类"静默零结果"是最贵的一种:调用方看到 total 有值、results 为空,
+    只会以为"官方没这类文档"。
+
+    三层各钉一段:
+      ① 映射函数本身:`question → answer`(发请求前)、`answer → question`(收响应后);
+      ② 全 kind 覆盖,漏一个就漏一个类型(将来加 kind 也会在这里红);
+      ③ 映射表与 `ENTITY_KINDS` 同集合(防"加了 kind 忘了映射")。
+    """
+    cp = _impl()
+    ok(hasattr(cp, "upstream_type_of"), "实现包应导出 upstream_type_of(映射的唯一出口)")
+    # ① 两个方向。
+    ok(cp.upstream_type_of("question") == "answer",
+       "对外 question 必须映射到上游 answer,实为 %r" % (cp.upstream_type_of("question"),))
+    ok(cp.upstream_type_of("knowledge") == "knowledge", "knowledge 应恒等映射")
+    ok(cp.upstream_type_of("article") == "article", "article 应恒等映射")
+    # ② 收响应方向:_norm_item 必须把上游 "answer" 翻成对外 "question"。
+    n = cp._norm_item(_syn("answer", 1, qid=2), "answer")
+    ok(n["type"] == "question", "上游 answer 应收敛为对外 question,实为 %r" % (n["type"],))
+    # ③ 映射表覆盖全部 kind(与 ENTITY_KINDS 同集合:漏一个 = 漏一个类型的召回)。
+    mapped = {k for k in cp.ENTITY_KINDS if cp.upstream_type_of(k)}
+    ok(mapped == set(cp.ENTITY_KINDS),
+       "有 kind 未建立上游映射(该类型过滤将恒零结果): %s"
+       % sorted(set(cp.ENTITY_KINDS) - mapped))
+    # 未知 kind 原样返回(不静默折成某个合法值——那会变成"过滤到别人").
+    ok(cp.upstream_type_of("nope") == "nope", "未知 kind 应原样返回以便上层报错")
+    # 大小写无关(上游写 Knowledge/Answer/Article)。
+    ok(cp.upstream_type_of("QUESTION") == "answer", "映射应大小写无关")
+
+
+@case("offline: product_id 三态直通(省略→默认 / None→不过滤 / 0→不过滤)")
+def t_product_id_three_states():
+    """`product_id` 的**值域三态**必须可区分——这是实测暴露的第二个真实缺陷。
+
+    修前:`search` 把 `product_id is None` 一律折成默认 93,于是 Python 调用方
+    **无法**表达"不过滤"(`product_id=None` 被静默过滤)。实测同问句下
+    `product_id=None` 与 `0` 的 total 从 31788 变 6326 —— 过滤被悄悄加上。
+
+    三态定义(签名默认值承担第一态,而不是把 None 折成默认):
+      * 省略参数 → 93(签名默认,与 `contract.json` 声明同值);
+      * 显式 None → 不过滤(上游省略 productIds);
+      * 显式 0 → 不过滤(CLI `--product 0`);
+      * 显式整数 → 直通。
+    """
+    import inspect
+    sig = inspect.signature(core.search)
+    default = sig.parameters["product_id"].default
+    ok(default == DEFAULT_PRODUCT_ID,
+       "product_id 签名默认应为声明里的默认编号 %r,实为 %r(省略参数靠它承担)"
+       % (DEFAULT_PRODUCT_ID, default))
+    # 省略:走签名默认 → 93。
+    _r, seen_omit = _patched_search((PROBE_DEGRADED,), budget=10)
+    ok(all(c["product_id"] == DEFAULT_PRODUCT_ID for c in seen_omit),
+       "省略参数应带默认过滤 %r,实收 %r"
+       % (DEFAULT_PRODUCT_ID, [c["product_id"] for c in seen_omit]))
+    # 显式 None:必须**不过滤**(上游省略参数)——修前这里会被折成 93。
+    r_none, seen_none = _patched_search((PROBE_DEGRADED,), product_id=None, budget=10)
+    ok(r_none["effectiveProductId"] is None,
+       "显式 product_id=None 应回显 None(显式不过滤),实为 %r" % (r_none["effectiveProductId"],))
+    ok(all(c["product_id"] is None for c in seen_none),
+       "显式 None 时上游必须省略产品过滤,实收 %r(修前会被静默折成默认 93)"
+       % ([c["product_id"] for c in seen_none],))
+    # 显式 0:同样不过滤(与 None 同效,但值域不同——调用方词汇)。
+    r_zero, seen_zero = _patched_search((PROBE_DEGRADED,), product_id=0, budget=10)
+    ok(r_zero["effectiveProductId"] == 0, "显式 0 应回显 0,实为 %r" % (r_zero["effectiveProductId"],))
+    ok(all(c["product_id"] is None for c in seen_zero),
+       "显式 0 时上游必须省略产品过滤,实收 %r" % ([c["product_id"] for c in seen_zero],))
+    # 区分度钉子:三态的回显值必须两两不同,否则本用例无法区分实现。
+    ok(len({DEFAULT_PRODUCT_ID, r_none["effectiveProductId"], r_zero["effectiveProductId"]}) == 3,
+       "三态回显值必须两两不同(否则无法区分省略/None/0): %r"
+       % ([DEFAULT_PRODUCT_ID, r_none["effectiveProductId"], r_zero["effectiveProductId"]],))
+    # CLI 侧:不传 --product 时**不得**把 None 当显式值传进内核(那等于不过滤)。
+    code, d, err = cli("search", PROBE_DEGRADED)
+    ok(code == 0, "kd search 不带 --product 应成功,实测 exit %r;stderr=%r" % (code, err[:200]))
+    ok(d and d.get("effectiveProductId") == DEFAULT_PRODUCT_ID,
+       "CLI 不传 --product 时应生效默认 %r(把 argparse 的 None 直传进内核会变成不过滤): %r"
+       % (DEFAULT_PRODUCT_ID, (d or {}).get("effectiveProductId")))
+
+
+@case("offline: 上游 answer 字面量只在映射点出现(改名不漏)")
+def t_answer_literal_confined():
+    """`"answer"` 这个**上游原始值**只允许出现在 `_upstream._norm_item`。
+
+    决策 D5 把对外的问答类型改名为 `question`,而**上游协议里仍是 `Answer`**。
+    这个映射必须收口在一处:若别处也直接比较 `"answer"`,那么改上游值名时会有
+    N 个地方需要同步改,漏一处就是静默漏召回(该类型条目全丢)。
+
+    本用例**静态扫描 src/kd/(除 _upstream.py 外)的 .py**:
+      * 允许出现的位置:注释/docstring(说明"上游叫 answer"是必要的);
+      * 不允许:代码里出现带引号的 `"answer"` 字面量。
+    """
+    import re
+    offenders = []
+    for root, _dirs, files in os.walk(os.path.join(SRC, "kd")):
+        for fn in files:
+            if not fn.endswith(".py") or fn == "_upstream.py":
+                continue
+            path = os.path.join(root, fn)
+            with open(path, encoding="utf-8") as f:
+                for i, line in enumerate(f, 1):
+                    code = line.split("#", 1)[0]
+                    if re.search(r'["\']answer["\']', code):
+                        offenders.append("%s:%d: %s" % (os.path.relpath(path, REPO), i,
+                                                        line.strip()[:80]))
+    ok(not offenders,
+       "上游值 \"answer\" 出现在映射点之外(应为 question)——漏改处会静默丢该类型条目:\n  "
+       + "\n  ".join(offenders))
+    # 映射点本身必须存在,否则上面这条扫描会因"扫了个空"而假绿。
+    src_up = open(os.path.join(SRC, "kd", "_impl", "_upstream.py"), encoding="utf-8").read()
+    ok('et == "answer"' in src_up,
+       "_upstream.py 里找不到 `et == \"answer\"` 映射分支——映射点没了,"
+       "扫描范围就成了空的(假绿)")
+    # ⚠️ 映射的**另一半**(发请求时的过滤比较)也必须在同一文件里,且值域指向上游词汇。
+    # 只有"收响应"方向被改是实测发生过的缺陷(见 t_type_vocab_mapping):
+    # 那一半漏改的后果是 type=question 恒零结果,而本条扫描抓不到(它在 _manifest,
+    # 那里比较的是变量 `want_up`,不含字面量)。故此处显式钉住映射表的定义位置。
+    ok('"question": "answer"' in src_up,
+       "_upstream.py 缺 `\"question\": \"answer\"` 映射表项——type 过滤会拿对外词汇"
+       "去比上游 entity-type,导致该类型恒零结果")
+    ok("def upstream_type_of" in src_up, "_upstream.py 缺 upstream_type_of 导出函数")
 
 
 @case("offline: 100 字硬闸 raise QueryTooLong(带 original/clamped/limit)")
@@ -402,9 +709,17 @@ def _impl():
 
 
 def _syn(et, i, qid=None, title=None, adopted=False):
-    """合成一个上游形态条目(用于喂 _norm_item),字段形状对齐实测响应。"""
+    """合成一个上游形态条目(用于喂 _norm_item),字段形状对齐实测响应。
+
+    ⚠️ 入参 `et` 是**上游**的 entity-type(小写):问答题传 `"answer"`——
+    `_norm_item` 收到它才会翻译成对外的 `question`。这是刻意的:用例必须证明
+    映射发生在**上游值**上,而不是在已经翻译过的值上(否则映射失效也测不出来)。
+
+    帖子级(`qid`)是默认行为:同一 `qid` + 不同 `i`(回答 id)的两个条目,经
+    `_manifest_merge` 必须合并成一条。
+    """
     if et == "answer":
-        return {"entity-type": "answer", "id": str(i), "questionId": str(qid or i),
+        return {"entity-type": "Answer", "id": str(i), "questionId": str(qid or i),
                 "highlight": {"question.title": title or ("问题标题 %s" % i),
                               "description": "回答正文 %s" % i},
                 "question": {"id": str(qid or i), "answers": 2, "moduleName": "财务云",
@@ -412,37 +727,35 @@ def _syn(et, i, qid=None, title=None, adopted=False):
                 "isAdopt": "true" if adopted else "false", "views": 10,
                 "comments": 3, "contentLen": 100, "updatedAt": "2026-01-01"}
     if et == "article":
-        return {"entity-type": "article", "id": str(i),
+        return {"entity-type": "Article", "id": str(i),
                 "highlight": {"title": title or ("文章标题 %s" % i), "content": "正文 %s" % i},
                 "classifies": [{"name": "星空旗舰版"}], "views": 10, "supports": 5,
                 "contentLen": 100, "updatedAt": "2026-01-01"}
-    return {"entity-type": "knowledge", "id": str(i), "knowledgeId": str(i),
+    return {"entity-type": "Knowledge", "id": str(i), "knowledgeId": str(i),
             "highlight": {"title": title or ("知识标题 %s" % i), "content": "正文 %s" % i},
             "classifies": [{"name": "星空旗舰版"}], "views": 10, "useful": 1,
             "contentLen": 100, "updatedAt": "2026-01-01"}
 
 
-@case("offline: 多路去重 —— 同一 answer 被两路命中只出一条且 hitRoutes=2")
+@case("offline: 多路去重 —— 同一条被两路命中只出一条且 hitRoutes=2")
 def t_manifest_dedupe_hit_routes():
     cp = _impl()
-    a = cp._norm_item(_syn("answer", 900, qid=800, title="同一帖回答"), "answer")
-    k = cp._norm_item(_syn("knowledge", 100), "knowledge")
-    # 路1: [answer, knowledge];路2: [answer]  —— answer 被两路命中
-    keys, hits, _first = cp._manifest_fuse([(1, [a, k]), (2, [a])])
+    a = cp._norm_item(_syn("knowledge", 100), "knowledge")
+    k = cp._norm_item(_syn("knowledge", 200), "knowledge")
+    # 路1: [a, k];路2: [a]  —— a 被两路命中
+    keys, hits, _first, _by = cp._manifest_fuse([(1, [a, k]), (2, [a])])
     ok(len(keys) == 2, "两条不同条目应去重为 2 条,实为 %d" % len(keys))
     ak = cp._manifest_key(a)
-    ok(ak in hits, "answer 条目未进命中表")
-    ok(len(hits[ak]) == 2, "answer 被两路命中,hitRoutes 应为 2,实为 %d" % len(hits[ak]))
+    ok(ak in hits, "条目未进命中表")
+    ok(len(hits[ak]) == 2, "该条被两路命中,hitRoutes 应为 2,实为 %d" % len(hits[ak]))
     proj = cp._manifest_project(a, hits[ak])
     ok(proj["hitRoutes"] == 2, "投影后的 hitRoutes 应为 2")
     ok(proj["routes"] == [1, 2], "投影后的 routes 应为 [1,2],实为 %r" % (proj["routes"],))
-    ok(proj["title"] == "同一帖回答", "标题应透传")
+    ok(proj["title"] == "知识标题 100", "标题应透传")
     ok("contentText" not in proj, "清单条目不得返回 contentText(要全文走 read)")
-    # knowledge 只命中 1 路
     kk = cp._manifest_key(k)
-    ok(len(hits[kk]) == 1, "knowledge 应只命中 1 路,实为 %d" % len(hits[kk]))
-    # 排序:本条不再是"命中路数多者优先"(见下条用例),此处只钉两种命中态都被记下。
-    ok(set(hits[ak]) == {1, 2}, "answer 的命中路集应为 {1,2},实为 %r" % (sorted(hits[ak]),))
+    ok(len(hits[kk]) == 1, "k 应只命中 1 路,实为 %d" % len(hits[kk]))
+    ok(set(hits[ak]) == {1, 2}, "命中路集应为 {1,2},实为 %r" % (sorted(hits[ak]),))
 
 
 @case("offline: 排序键不含命中路数 —— 路序靠前者恒在前(本轮核心行为变更)")
@@ -464,7 +777,7 @@ def t_manifest_order_route_first():
     cp = _impl()
     a = cp._norm_item(_syn("knowledge", 11, title="甲:单路命中但路序靠前"), "knowledge")
     b = cp._norm_item(_syn("knowledge", 22, title="乙:双路命中但路序靠后"), "knowledge")
-    keys, hits, first = cp._manifest_fuse([(1, [a, b]), (2, [b])])
+    keys, hits, first, _by = cp._manifest_fuse([(1, [a, b]), (2, [b])])
 
     ka, kb = cp._manifest_key(a), cp._manifest_key(b)
     ok(len(hits[ka]) == 1, "甲应命中 1 路,实为 %d" % len(hits[ka]))
@@ -480,7 +793,7 @@ def t_manifest_order_route_first():
     # ——证明本用例不是"永远让命中少者在前",而是真的按路序。
     c = cp._norm_item(_syn("knowledge", 33, title="丙:双路命中且路序最靠前"), "knowledge")
     d = cp._norm_item(_syn("knowledge", 44, title="丁:单路命中但路序靠后"), "knowledge")
-    keys2, hits2, first2 = cp._manifest_fuse([(1, [c]), (2, [c, d])])
+    keys2, hits2, first2, _by2 = cp._manifest_fuse([(1, [c]), (2, [c, d])])
     ok(len(hits2[cp._manifest_key(c)]) == 2, "丙应命中 2 路")
     ok(first2[cp._manifest_key(c)] == (1, 1), "丙首次出现应为 (1,1)")
     # 丁未在路1 出现,首次落在路2 的第 2 名(丙占了路2 第 1 名)。
@@ -488,61 +801,740 @@ def t_manifest_order_route_first():
     ok(keys2[0] == cp._manifest_key(c), "丙路序 (1,1) 最靠前,应排首位,实得 %r" % (keys2,))
 
     # 纯函数性质:排序键的两维都不含命中路数(直接问 _manifest_rank)。
-    rank = cp._manifest_rank(hits, first)
+    # ⚠️ 2026-09-28 改:该函数的第一个形参 `route_hits` 在函数体内**零使用**,
+    # 是装饰性形参,已删(它误导读代码的人以为排序与命中路数有关,恰好与本契约相反)。
+    # 这里把"排序不得看命中路数"重钉在**签名 + 行为**两处:
+    rank = cp._manifest_rank(first)
     probe = cp._manifest_key(a)
     ok(len(rank(probe)) == 2,
        "排序键应为 2 维 (路序, 路内名次),实为 %d 维: %r" % (len(rank(probe)), rank(probe)))
     ok(rank(probe) == (1, 1), "甲的排序键应为 (1,1),实为 %r" % (rank(probe),))
+    # 签名钉子:入参只允许"首次出现表"一个,不得再混入命中路数。
+    import inspect
+    _params = list(inspect.signature(cp._manifest_rank).parameters)
+    ok(_params == ["route_index"],
+       "排序键构造器的形参应为 ['route_index'],实为 %r —— "
+       "出现 route_hits/hits 之类即意味着排序有重新看命中路数的通道" % (_params,))
+    # 行为钉子:hitRoutes 不同的两条,排序完全由首次出现决定(把命中表喂进去也不生效,
+    # 因为它根本不是入参)。
+    ok(rank(cp._manifest_key(b)) == (1, 2),
+       "乙的排序键应为 (1,2)(它命中 2 路,但命中数不进排序键),实为 %r"
+       % (rank(cp._manifest_key(b)),))
     ok(not any("score" in str(k).lower() for k in keys), "清单排序不得引入分数键")
 
 
-@case("offline: answer 双 id 空间 —— 同一帖的不同回答不被合并")
-def t_manifest_answer_id_space():
+@case("offline: 帖子级归并 —— 同一帖的多条回答被合并为一条(ADR-0014)")
+def t_manifest_question_merge():
+    """**本轮硬证据**(决策 D4/D6 + ADR-0014)。
+
+    ⚠️ 本条与它取代的旧用例(`t_manifest_answer_id_space`,断言"同帖不同回答
+    **不被**合并")**方向完全相反**。旧口径的理由是"同帖多条回答语义不同
+    (采纳的是解、普通的是旁证),应可分别筛";用户推翻了该理由:
+    "我自己人类搜索社区的时候问题和答案都是在一起的"。
+
+    现行契约:同一帖的多条回答在上游是多个条目,在清单里**合并为一条**;
+    条目的 `id` 就是**帖子号**;`questionId` 字段整体删除。
+    """
     cp = _impl()
-    # 同一 questionId(800)下的两条**不同回答**(id 901/902)
+    # 同一帖子(帖子号 800)下的两条**不同回答**(上游回答 id 901/902)
     a1 = cp._norm_item(_syn("answer", 901, qid=800, title="帖子标题"), "answer")
     a2 = cp._norm_item(_syn("answer", 902, qid=800, title="帖子标题"), "answer")
-    ok(a1["questionId"] == a2["questionId"] == "800", "构造数据应同帖")
-    ok(cp._manifest_key(a1) != cp._manifest_key(a2),
-       "去重键必须按回答 id 区分:两条不同回答得到同一个键 %r" % (cp._manifest_key(a1),))
-    ok(cp._manifest_key(a1) == "answer:901", "answer 去重键应为 answer:<回答id>,实为 %r" % (cp._manifest_key(a1),))
-    # 两路各自命中其中一条:清单必须是 2 条,而不是被并成 1 条
-    keys, hits, _first = cp._manifest_fuse([(1, [a1]), (2, [a2])])
-    ok(len(keys) == 2, "同帖不同回答应各自成条(2 条),实为 %d 条" % len(keys))
-    # 同一条被两路命中:仍只 1 条
-    keys2, hits2, _f2 = cp._manifest_fuse([(1, [a1]), (2, [a1])])
-    ok(len(keys2) == 1, "同一回答被两路命中应合并为 1 条,实为 %d 条" % len(keys2))
+    # 上游 "answer" 已被翻译成对外 "question"(决策 D5;映射只在 _norm_item 一处)。
+    ok(a1["type"] == a2["type"] == "question",
+       "上游 answer 条目应翻译成对外 question,实为 %r/%r" % (a1["type"], a2["type"]))
+    ok("questionId" not in a1,
+       "questionId 字段应已删除(帖级化后 id 就是帖子号),实有键 %r" % (sorted(a1.keys()),))
+    ok(a1["id"] == a2["id"] == "800",
+       "条目 id 应为**帖子号**(800),实为 %r/%r —— 取回答 id 会让同帖各自成条" % (a1["id"], a2["id"]))
+    ok(cp._manifest_key(a1) == cp._manifest_key(a2) == "question:800",
+       "去重键应为 question:<帖子号>,实为 %r/%r"
+       % (cp._manifest_key(a1), cp._manifest_key(a2)))
+
+    # 两路各自命中其中一条回答:清单必须归并成 **1** 条(旧契约在此得 2 条)。
+    keys, hits, first, by = cp._manifest_fuse([(1, [a1]), (2, [a2])])
+    ok(len(keys) == 1,
+       "同帖两条回答应合并为 1 条(帖子级,ADR-0014),实为 %d 条" % len(keys))
+    merged = by[keys[0]]
+    ok(merged["id"] == "800", "合并后条目 id 应为帖子号 800,实为 %r" % (merged["id"],))
+    ok(len(hits[keys[0]]) == 2, "该帖被两路命中,hitRoutes 应为 2,实为 %d" % len(hits[keys[0]]))
+    # 合并不得引入排序分:该帖的排序位次取**首次出现**(路1 第 1 名)。
+    ok(first[keys[0]] == (1, 1),
+       "合并后排序位次应仍取首次出现 (1,1),实为 %r —— 归并不得改排序键" % (first[keys[0]],))
+
+    # 同一条回答被两路命中:仍是 1 条(与上一条不冲突,证明归并不是"恒合并所有")。
+    keys2, hits2, _f2, _b2 = cp._manifest_fuse([(1, [a1]), (2, [a1])])
+    ok(len(keys2) == 1, "同一条回答被两路命中应归并为 1 条,实为 %d 条" % len(keys2))
     ok(len(hits2[cp._manifest_key(a1)]) == 2, "hitRoutes 应为 2")
 
+    # 不同帖**不得**被归并(归并键是帖子号,不是"所有问答"。
+    a3 = cp._norm_item(_syn("answer", 903, qid=801, title="另一帖"), "answer")
+    keys3, _h3, _f3, _b3 = cp._manifest_fuse([(1, [a1, a3])])
+    ok(len(keys3) == 2, "不同帖必须各自成条,实为 %d 条" % len(keys3))
 
-@case("offline: 清单投影字段集固定(spec 16 字段;无 contentText/fusedScore/chunks)")
-def t_manifest_projection():
+
+@case("offline: 帖级信号聚合 —— adopted 任一为真、计数取最大值(归并语义)")
+def t_manifest_merge_signals():
+    """归并时的**帖级信号聚合规则**(ADR-0014 的合并规则表)。
+
+    语义变化(决策 D7):`adopted` 从"这条回答被采纳"变成"**这帖里有采纳答案**"。
+    这是刻意的——归并后条目代表整个帖子,旧的回答级语义已无宿主;调用方读法不变
+    (仍是"这条值不值得点开"的旁证),故未新增字段。
+
+    两条规则各有反例对照,防止"恰好通过":
+      * `adopted`:任一为真即为真 —— 反例是两条都假时必须仍为假(不得恒真);
+      * `answersCount`/`comments`/`supports`:取最大值 —— 反例是较小的那条不得胜出
+        (归一化不得把"某条缺字段"当成 0 而污染真值)。
+    """
     cp = _impl()
-    for et in ("knowledge", "answer", "article"):
-        n = cp._norm_item(_syn(et, 7), et)
+    # 上游形态:一条被采纳、一条没被采纳,同一个帖子号 800。
+    adopted_one = cp._norm_item(_syn("answer", 901, qid=800, adopted=True), "answer")
+    plain_one = cp._norm_item(_syn("answer", 902, qid=800, adopted=False), "answer")
+    merged = cp._manifest_merge([adopted_one, plain_one])
+    ok(merged["adopted"] is True,
+       "同帖有一条被采纳时,帖级 adopted 应为 True(任一为真即为真),实为 %r"
+       % (merged["adopted"],))
+    # 反例:两条都未被采纳 → 必须为 False(证明上一条不是恒真)。
+    merged_false = cp._manifest_merge([plain_one, dict(plain_one)])
+    ok(merged_false["adopted"] is False,
+       "同帖全未被采纳时 adopted 应为 False,实为 %r" % (merged_false["adopted"],))
+
+    # 计数取最大值(构造:两条 answersCount 不同,大的必须胜出)。
+    lo = dict(adopted_one, answersCount=2, comments=1)
+    hi = dict(adopted_one, answersCount=7, comments=9)
+    m2 = cp._manifest_merge([lo, hi])
+    ok(m2["answersCount"] == 7, "answersCount 应取最大值 7,实为 %r" % (m2["answersCount"],))
+    ok(m2["comments"] == 9, "comments 应取最大值 9,实为 %r" % (m2["comments"],))
+    # 反向顺序也要一致(证明取 max 而不是"取后者")。
+    m3 = cp._manifest_merge([hi, lo])
+    ok(m3["answersCount"] == 7 and m3["comments"] == 9,
+       "归并结果不得依赖条目顺序: %r/%r" % (m3["answersCount"], m3["comments"]))
+    # 某条缺字段(None)时不得把真值冲掉。
+    m4 = cp._manifest_merge([dict(adopted_one, answersCount=None), hi])
+    ok(m4["answersCount"] == 7, "缺字段条目不得冲掉真值,实为 %r" % (m4["answersCount"],))
+
+    # snippet/questionBody 取首个非空,且**不拼接**(拼接会把不相邻片段伪装成连续文本)。
+    s1 = dict(adopted_one, snippet=None)
+    s2 = dict(adopted_one, snippet="第二条的片段")
+    m5 = cp._manifest_merge([s1, s2])
+    ok(m5["snippet"] == "第二条的片段",
+       "首条 snippet 为空时应取首条非空,实为 %r" % (m5["snippet"],))
+    ok(m5["questionBody"] == adopted_one["questionBody"], "questionBody 应取首个非空")
+
+
+@case("offline: 清单投影字段集固定(声明派生;无 contentText/views/questionId)")
+def t_manifest_projection():
+    """字段集的**双向**断言:既不得多出、也不得少了。
+
+    键集不手写在这里,而是从 `contract.json` 派生(决策 D13)。故本用例同时钉两件事:
+      ① 代码产出的键集 == 声明允许的键集(多一个即红:防"顺手加个字段");
+      ② 声明的必含键集 ⊆ 产出(少一个即红:防"字段被删而声明没跟上")。
+    """
+    cp = _impl()
+    declared = set(RESULT_KEYS)
+    for et in ("knowledge", "question", "article"):
+        # ⚠️ 喂给 _norm_item 的是**上游** entity-type:问答题必须传 "answer"。
+        up_et = "answer" if et == "question" else et
+        n = cp._norm_item(_syn(up_et, 7), up_et)
         ok(n is not None, "%s 合成条目未被 _norm_item 接受(构造数据形状不对)" % et)
+        ok(n["type"] == et, "%s 条目规范化后 type 应为 %r,实为 %r" % (et, et, n["type"]))
         p = cp._manifest_project(n, {1, 2})
         ks = set(p.keys())
-        # 16 字段**逐个**要求存在(spec 第 3.1 节逐字段冻结:不是"抽查几个")。
-        missing = RESULT_KEYS - ks
-        ok(not missing, "%s 条目投影缺字段 spec 要求: %s" % (et, sorted(missing)))
-        # 且不得多出白名单外的键。
-        extra = ks - RESULT_KEYS
-        ok(not extra, "%s 条目投影出现白名单外字段: %s" % (et, sorted(extra)))
+        extra = ks - declared
+        ok(not extra,
+           "%s 条目投影出现声明外字段: %s" % (et, sorted(extra)))
+        # 声明里的键必须**全部产出**(值可为 None:声明即"键必须在")。
+        # 这两个是内核算出的命中信息,不在声明里当条目字段,由本用例单独要求。
+        required = declared | {"hitRoutes", "routes"}
+        missing = required - ks
+        ok(not missing, "%s 条目投影缺字段: %s" % (et, sorted(missing)))
         # 历史残留字段出现即 FAIL。
         check_no_forbidden(ks, RESULT_FORBIDDEN_KEYS, "%s 条目投影" % et)
         ok(p["hitRoutes"] == 2 and p["routes"] == [1, 2], "%s 投影的命中信息不符" % et)
-    # 上游原生信号透传(不是内核算的):answer 的这三项必须从 _norm_item 带出来。
+
+    # 上游原生信号透传(不是内核算的):问答条目的这几项必须从 _norm_item 带出来。
     a = cp._norm_item(_syn("answer", 900, qid=800, adopted=True), "answer")
     pa = cp._manifest_project(a, {1})
-    ok(pa["adopted"] is True, "answer 投影应透传 adopted=True,实为 %r" % (pa["adopted"],))
-    ok(pa["answersCount"] == 2, "answer 投影应透传 answersCount=2,实为 %r" % (pa["answersCount"],))
-    ok(pa["comments"] == 3, "answer 投影应透传 comments=3,实为 %r" % (pa["comments"],))
+    ok(pa["adopted"] is True, "问答投影应透传 adopted=True,实为 %r" % (pa["adopted"],))
+    ok(pa["answersCount"] == 2, "问答投影应透传 answersCount=2,实为 %r" % (pa["answersCount"],))
+    ok(pa["comments"] == 3, "问答投影应透传 comments=3,实为 %r" % (pa["comments"],))
     ok(pa["questionBody"] == "问题正文 900",
-       "answer 投影应透传 questionBody(来源是 question.description),实为 %r" % (pa["questionBody"],))
+       "问答投影应透传 questionBody(来源是 question.description),实为 %r" % (pa["questionBody"],))
     # article 的 supports 同理。
     art = cp._norm_item(_syn("article", 5), "article")
     ok(cp._manifest_project(art, {1})["supports"] == 5, "article 投影应透传 supports")
+
+
+@case("offline: 清单字段集三段对账(声明↔冻结基线↔真实输出)+ 注入自检")
+def t_result_keys_vs_real_output():
+    """**T4 的核心修复**:把字段集检查的比对对象从「程序自己读的声明」换成
+    「程序真实的输出」。
+
+    ⚠️ 本条替换的旧形态(`t_manifest_projection` 里的键集比对)实测是**空转的重言式**:
+    它拿 `_manifest_project` 的输出键集去比 `RESULT_KEYS`(派生自 contract.json),
+    而 `_manifest_project` **正是用 `result_keys()` 决定产出哪些键的**——两边同源,
+    恒等成立。实测两个方向的注入都 35/35 全绿,而 `kd search` 真的少了一个字段。
+
+    实测(2026-09-28,三路注入,全部由本条抓住):
+      | 注入                                    | 旧形态 | 本条 |
+      |-----------------------------------------|--------|------|
+      | contract.json 的 resultKeys 删 `products` | 全绿   | 红   |
+      | 代码侧新增 `productsV2`、声明不动          | 全绿   | 红   |
+      | 声明与冻结基线漂移                         | 全绿   | 红   |
+
+    三段对账(缺任一段都会重新退化成自环):
+      ① 交叉核对:contract.json 声明 == 冻结基线(两份独立来源,任一处漂移即红);
+        同时核对代码内置兜底集(它在"声明文件缺失"时生效,若它能自由漂移,
+        装机漏拷 contract.json 的机器上字段集会与开发时不同而无任何信号);
+      ② 真实输出:喂合成上游走**完整链路**(`_search_manifest` → 归一 → 归并 →
+        投影),对 `results[]` 的真实键集断言 —— 不再借用 `_manifest_project` 的
+        入参/出参同源关系;
+      ③ 注入自检:临时改声明,断言 ①/② 真的会红 —— 证明这两条不是新的重言式。
+    """
+    cp = _impl()
+
+    # ---- ① 交叉核对:声明 == 冻结基线 == 代码兜底集 ----
+    declared = tuple(_CONTRACT["search"]["resultKeys"])
+    declared_top = tuple(_CONTRACT["search"]["topKeys"])
+    ok(declared == FROZEN_RESULT_KEYS,
+       "contract.json 的 resultKeys 与冻结基线漂移:\n  声明 %r\n  基线 %r\n"
+       "▶ 若这是有意改对外契约,请同步 tests/kd_regression.py 的 FROZEN_RESULT_KEYS;"
+       "若无意,说明声明被误改了。" % (declared, FROZEN_RESULT_KEYS))
+    ok(declared_top == FROZEN_TOP_KEYS,
+       "contract.json 的 topKeys 与冻结基线漂移:\n  声明 %r\n  基线 %r"
+       % (declared_top, FROZEN_TOP_KEYS))
+    ok(set(declared).isdisjoint(RESULT_FORBIDDEN_KEYS),
+       "声明自相矛盾:这些键同时在 resultKeys 与 resultForbiddenKeys: %s"
+       % sorted(set(declared) & RESULT_FORBIDDEN_KEYS))
+
+    # ---- ② 真实输出:走完整链路(打桩上游,零网络) ----
+    items = [_syn("knowledge", 101, title="知识 101"),
+             _syn("answer", 201, qid=200, title="帖子 200", adopted=True),
+             _syn("article", 301, title="文章 301")]
+    out = _manifest_via_full_chain(items)
+
+    top_ks = set(out.keys())
+    extra_top = top_ks - set(FROZEN_TOP_KEYS)
+    missing_top = set(FROZEN_TOP_KEYS) - top_ks
+    ok(not extra_top and not missing_top,
+       "search 顶层真实输出与契约不符:\n  多出 %s\n  缺 %s\n"
+       "▶ 顶层键是**声明式交付**:多一个即未登记的能力,少一个即丢交付字段。"
+       % (sorted(extra_top), sorted(missing_top)))
+
+    ok(out["results"], "合成上游喂了 3 条,清单却为空(链路断在投影之前)")
+    seen_types = set()
+    for i, it in enumerate(out["results"]):
+        name = "results[%d](%s)" % (i, it.get("type"))
+        seen_types.add(it.get("type"))
+        kk = set(it.keys())
+        miss = set(FROZEN_RESULT_KEYS) - kk
+        extra = kk - set(FROZEN_RESULT_KEYS)
+        ok(not miss, "%s 真实输出缺字段: %s(▶ 字段被删而声明没跟上——"
+                     "这正是 d753719 那次漏报的形态)" % (name, sorted(miss)))
+        ok(not extra, "%s 真实输出多出声明外字段: %s(▶ 新增字段未登记进 contract.json)"
+           % (name, sorted(extra)))
+        check_no_forbidden(kk, RESULT_FORBIDDEN_KEYS, name)
+    ok(seen_types == {"knowledge", "question", "article"},
+       "三种实体的真实条目未全被链路产出(实得 %r)——覆盖缺口会让某档的字段检查静默跳过"
+       % (sorted(seen_types),))
+
+    # ---- ③ 注入自检:证明 ①② 有抓取力(而不是新的重言式) ----
+    _assert_declared_mismatch_fails(declared)
+    _assert_code_side_new_key_fails(items)
+
+
+def _manifest_via_full_chain(items):
+    """把合成条目喂进**完整检索链路**,返回真实的 search 返回体(不碰 `_manifest_project`)。
+
+    做法:打桩 `_search_upstream` 让它按路号返回不同条目,然后调 `core.search`。
+    这样断言的对象是"用户真的会拿到的东西",而不是内部函数的入参/出参对。
+    """
+    cp = _impl()
+    real = cp._search_upstream
+    # 每路都返回同一批条目:多路命中会走归并,覆盖面更全。
+    def fake(text, product_id, page, page_size, global_, sorts_type, type_, budget=None,
+             rate=None):
+        return {"content": [dict(x) for x in items], "totalElements": len(items),
+                "totalPages": 1}
+    cp._search_upstream = fake
+    try:
+        return core.search("契约自检探针", product_id=93, budget=10)
+    finally:
+        cp._search_upstream = real
+
+
+def _assert_declared_mismatch_fails(declared):
+    """注入:声明里删掉一个字段 → ① 必须红。
+
+    直接验证"对账函数"的判定逻辑:用一个少一个键的声明去比冻结基线,
+    **必须**得出不相等。若这里判等成立,说明对账退化成恒真,本用例整体无保护力。
+    """
+    broken = tuple(k for k in declared if k != "products")
+    ok(len(broken) == len(declared) - 1,
+       "注入自检构造失败:声明里没有 products,无法验证删除能被抓住")
+    ok(broken != FROZEN_RESULT_KEYS,
+       "注入自检失败:从声明删掉 products 后,与冻结基线的比对**仍然判等**"
+       "—— 说明对账已退化成重言式(这正是 T4 要修的形态)")
+    ok(set(FROZEN_RESULT_KEYS) - set(broken) == {"products"},
+       "注入自检失败:删 products 后差分不是 {products}")
+
+
+def _assert_code_side_new_key_fails(items):
+    """注入:代码侧多产出一个未声明的键 → ② 必须红。
+
+    打桩 `result_keys()` 之外更狠的做法是直接改造条目投影结果,但那会变成
+    "测自己写的假函数"。这里改打桩**输出端**:让上游条目多带一个字段并让它
+    流到投影层——若投影层只产声明键,它会被静默丢弃(这是**正确**行为,
+    说明"声明即白名单"成立);故本自检改为直接对 `_manifest_project` 的
+    产出做一次"注入键"验算,断言对账逻辑能识别多出的键。
+    """
+    cp = _impl()
+    n = cp._norm_item(_syn("knowledge", 1), "knowledge")
+    p = cp._manifest_project(n, {1})
+    injected = dict(p)
+    injected["productsV2"] = "未声明的新字段"
+    extra = set(injected) - set(FROZEN_RESULT_KEYS)
+    ok(extra == {"productsV2"},
+       "注入自检失败:代码侧新增未声明字段未被对账识别(实得差分 %r)" % (sorted(extra),))
+    # 反向确认:未注入时差分必须为空(否则上面那条会因为"永远有差分"而假绿)。
+    ok(not (set(p) - set(FROZEN_RESULT_KEYS)),
+       "未注入时投影已多出字段 %s —— 真实代码与契约不符,请先修代码"
+       % sorted(set(p) - set(FROZEN_RESULT_KEYS)))
+
+
+@case("offline: 链接政策已定案且代码真的读它(knowledge/article 给链接、question 不给)")
+def t_link_policy():
+    """**T1 的回归钉子**。
+
+    此前 `contract.json` 的 `linkPolicy` 是 `"status": "pending"` 的**纯占位、零消费者**:
+    文档抄了四遍口径各异(README 第 189 行与 SKILL.md/ANSWER-SPEC 正面对撞),
+    而声明这一份谁也没看——"单一来源"写了却没生效。
+
+    现在它被代码读(`_config.link_policy/link_for`),本条钉三件事:
+      ① 声明已定案(status 不再是 pending),三条路径的政策齐全;
+      ② 代码读到的政策 == 声明的政策(不是只写在 JSON 里);
+      ③ 方向正确:`question` 恒为 no-link(匿名 9/9 + 登录态 1 条,证据两条方向一致)。
+    """
+    cp = _impl()
+    lp = _CONTRACT.get("linkPolicy") or {}
+    ok(lp.get("status") != "pending",
+       "linkPolicy.status 仍是 pending —— 链接专项(T1)尚未收口,文档会继续口径打架")
+    rule = lp.get("rule") or {}
+    for k in ("knowledge", "question", "article"):
+        ok(k in rule, "linkPolicy.rule 缺 %s 的政策" % k)
+    # ② 代码真的读它:政策必须能被代码取到,且与声明逐字一致。
+    ok(cp.link_policy() == {k: str(v) for k, v in rule.items()},
+       "代码读到的 linkPolicy 与声明不一致:\n  代码 %r\n  声明 %r"
+       % (cp.link_policy(), rule))
+    # ③ 方向钉子:`question` 不给链接是两条证据方向一致的硬结论,不得被静默放开。
+    ok(cp.link_for("question") == "no-link",
+       "question 的政策应为 no-link(匿名 9/9 + 登录态 1 条不可点),实为 %r"
+       % (cp.link_for("question"),))
+    ok(cp.link_for("knowledge") == "link",
+       "knowledge 的政策应为 link(匿名 14/14 可点),实为 %r" % (cp.link_for("knowledge"),))
+    ok(cp.link_for("article") == "link",
+       "article 的政策应为 link(匿名 12/12 可点),实为 %r" % (cp.link_for("article"),))
+    # 未知 kind 必须保守(少给一个链接 ≠ 多给一个死链)。回落值不得是"给链接"。
+    ok(cp.link_for("不存在的kind") == "no-link",
+       "未知 kind 的政策必须保守回落 no-link,实为 %r" % (cp.link_for("不存在的kind"),))
+    ok(cp.link_for(None) == "no-link", "None kind 必须保守回落 no-link")
+    # 证据必须随政策一起在声明里 —— 否则下次没人知道凭什么这么定。
+    ev = lp.get("evidence") or {}
+    for k in ("knowledge", "article", "question"):
+        ok(ev.get(k), "linkPolicy.evidence 缺 %s 的实测依据(政策必须可追溯到实测)" % k)
+
+
+@case("offline: 链接政策落在生产路径上(question 的 url 必须被抑制)")
+def t_link_policy_enforced_in_output():
+    """**声明必须落在生产路径上,否则等于没修**。
+
+    ⚠️ 这条补的是 2026-09-28 审查抓到的实洞:`linkPolicy` 定案后,`link_policy()` /
+    `link_for()` **只有测试在调**,生产路径(`_manifest_project` / `_detail`)照样
+    无条件输出三档 url —— 于是清单里 `question` 条目的 url 照旧交给调用方,
+    而该路径实测 9/9 + 登录态 1 条全部不可点。那与修复前的 `pending` 占位**实质相同**:
+    声明写了、行为没变,只有测试在自说自话。
+
+    现在生效点是 `_config.apply_link_policy`,两处调用:
+      * `_manifest_project`(清单条目);
+      * `_detail` 的三个 kind 函数(`read` 全文)。
+    本条对着**生产函数的输出**断言,而不是对着政策函数本身(那会退回自比)。
+    """
+    cp = _impl()
+    # ① 清单投影:question 抑制,knowledge/article 保留。
+    for et, kind, want in (("answer", "question", None),
+                           ("knowledge", "knowledge", "kept"),
+                           ("article", "article", "kept")):
+        n = cp._norm_item(_syn(et, 7, qid=6), et)
+        ok(n is not None, "合成条目未被接受(%s)" % et)
+        p = cp._manifest_project(n, {1})
+        if want is None:
+            ok(p["url"] is None,
+               "清单里 %s 条目的 url 必须被抑制(linkPolicy: no-link),实为 %r"
+               % (kind, p["url"]))
+        else:
+            ok(p["url"] and str(p["url"]).startswith("https://"),
+               "清单里 %s 条目的 url 必须保留(linkPolicy: link),实为 %r"
+               % (kind, p["url"]))
+        # 抑制不能顺手把字段删掉 —— 字段仍在契约里,只是值为 None。
+        ok("url" in p, "%s 条目的 url 字段被删了(应保留字段、置 None)" % kind)
+
+    # ② 政策改了,输出必须跟着改 —— 证明生产路径**真的在读声明**(不是硬编码)。
+    #    把政策整体翻成"都不给链接",则 knowledge 也必须被抑制。
+    import kd._impl._config as _cfg_mod
+    real = _cfg_mod._CONTRACT
+    try:
+        _cfg_mod._CONTRACT = {"linkPolicy": {"rule": {"knowledge": "no-link",
+                                                     "question": "no-link",
+                                                     "article": "no-link"}}}
+        n = cp._norm_item(_syn("knowledge", 9), "knowledge")
+        ok(cp._manifest_project(n, {1})["url"] is None,
+           "把政策改成 no-link 后 knowledge 仍输出 url —— 说明生产路径没读声明,"
+           "而是硬编码了某一档政策")
+    finally:
+        _cfg_mod._CONTRACT = real
+
+
+@case("offline: 链接口径四份文档 + 声明一致(无残留『不给链接』/『都可点』表述)")
+def t_link_policy_docs_in_sync():
+    """**T1 的文档同步钉子** —— 治的是"同一事实抄四遍"。
+
+    实测的翻车形态:`README.md:189` 写"引用做成可点击角标",而 SKILL.md 与
+    ANSWER-SPEC 同时写"当前不给链接",两份在同一仓库里**正面对撞**;
+    而 README 那一处**此前从未被列为同步点**。
+
+    本条不检查措辞好坏,只检查**政策方向**在五处载体里一致:
+      contract.json(唯一真源)/ ANSWER-SPEC / SKILL.md / README / _upstream.py 注释。
+    """
+    files = {
+        "ANSWER-SPEC": os.path.join(REPO, "docs", "ANSWER-SPEC.md"),
+        "SKILL.md": os.path.join(REPO, "skills", "kingdee-knowledge", "skills",
+                                 "kingdee-knowledge", "SKILL.md"),
+        "README": os.path.join(REPO, "README.md"),
+        "_upstream.py": os.path.join(SRC, "kd", "_impl", "_upstream.py"),
+    }
+    # ① 过期表述不得残留(它们是 09-27 那套"一律 302"口径的化石)。
+    stale = ("三条路径现在一律 302", "三条网页路径实测全失效",
+             "三条路径一律 302", "当前不给链接")
+    for name, path in files.items():
+        txt = open(path, encoding="utf-8").read()
+        for bad in stale:
+            ok(bad not in txt,
+               "%s 仍残留过期链接口径 %r —— 该表述来自 09-27 的『三路径一律 302』,"
+               "已由 09-28 复测推翻(见 contract.json 的 linkPolicy)" % (name, bad))
+    # ② 每份载体都必须出现"给链接 vs 不给"的分档,而不是笼统一句。
+    for name, path in files.items():
+        txt = open(path, encoding="utf-8").read()
+        ok("question" in txt and "knowledge" in txt,
+           "%s 的链接口径未按 kind 分档(应分别说明 knowledge/article 与 question)" % name)
+    # ③ README 是**此前漏掉的第五处**,单独钉:它必须指向唯一真源而不是自己另立一套。
+    rd = open(files["README"], encoding="utf-8").read()
+    ok("linkPolicy" in rd,
+       "README 的链接口径未指向唯一真源 contract.json 的 linkPolicy —— "
+       "它曾独立写了一套相反的说法(『引用做成可点击角标』)而无人同步")
+
+
+@case("offline: 稀有数字 token 抢第 1 路,拉丁词不前置(T2 核心行为变更)")
+def t_rare_token_route():
+    """**T2 的回归钉子**(2026-09-28)。
+
+    行为变更:规则拆词路径把问句里的**纯数字串**(≥3 位)单独成路并置于**第 1 路**,
+    原句路退到第 2 路。依据是同一条实测机制:排序键第一维是"首次出现的路序号",
+    故最能把候选集压窄的那一路必须排第 1。
+
+    实测(金标 `646787188905978624`,产品线 93;同一组词仅换路序):
+      `[2510, 原句]` → 第 1;`[原句, 2510]` → 第 4–5;改前默认 `[原句, 泛词路]` → 第 3。
+
+    ⚠️ 本条同时钉**负结果**:拉丁词与中文词一律不得前置。实测 `BOM`(total 1308)前置
+    会把金标 B(`873372977646105600`)从第 2 挤到第 12 —— "看起来像标识符"不等于
+    "比同问句里其他路更收窄",判断它需要语义,规则做不到。故只认数字。
+    """
+    # (a) 纯数字 token 抢第 1 路,原句路退到第 2 路(且仍在,没被丢)。
+    r, seen = _patched_search(("2510 应用为禁用状态[网关]",), product_id=93, budget=10)
+    ok(r["queries"][0] == "2510",
+       "含纯数字 token 时第 1 路应为该 token,实为 %r(路序=%r)" % (r["queries"][0], r["queries"]))
+    ok("应用为禁用状态[网关]" in r["queries"][1],
+       "原句路应退到第 2 路且内容完整,实为 %r" % (r["queries"][1:],))
+    ok(seen[0]["text"] == "2510", "上游第 1 次收到的检索词应为 token,实为 %r" % (seen[0]["text"],))
+    # token 路必须只放它自己(不得与中文合并 —— E8 实测合并后掉出前 30)。
+    ok(r["queries"][0] == "2510" and " " not in r["queries"][0],
+       "token 路应只含 token 本身,不得与其它词空格拼接: %r" % (r["queries"][0],))
+
+    # (b) 无数字 token 时,原句路仍居首(不得因为加了 token 路就动摇了默认形态)。
+    r2, _ = _patched_search((PROBE_MULTI_ROUTE,), product_id=93, budget=10)
+    ok(r2["queries"][0] == PROBE_MULTI_ROUTE,
+       "无数字 token 时第 1 路应仍是原句路,实为 %r" % (r2["queries"][0],))
+
+    # (c) **负结果钉子**:拉丁词不得前置。
+    r3, _ = _patched_search(("BOM 分母变平方",), product_id=93, budget=10)
+    ok(r3["queries"][0] != "BOM",
+       "拉丁词 BOM 被前置了 —— 实测这会把金标 B 从第 2 挤到第 12,"
+       "规则只允许前置**纯数字** token。实得路序 %r" % (r3["queries"],))
+    r4, _ = _patched_search(("ENG_BOM 是什么",), product_id=93, budget=10)
+    ok(r4["queries"][0] != "ENG_BOM",
+       "拉丁词 ENG_BOM 被前置了 —— 同上,只允许纯数字。实得路序 %r" % (r4["queries"],))
+
+    # (d) 位数字数下限:1~2 位的数字不构成 token(实测是页数/序号,无区分度)。
+    r5, _ = _patched_search(("2 个凭证 无法 删除",), product_id=93, budget=10)
+    ok(r5["queries"][0] != "2",
+       "1 位数被当成 token 前置了(应受 minDigits 挡下): %r" % (r5["queries"],))
+
+    # (e) 只取一个 token:多个数字串时不得各占一路挤掉其它路。
+    r6, _ = _patched_search(("2510 和 3600 都报错",), product_id=93, budget=10)
+    ok(r6["queries"].count("2510") == 1, "token 路应只出现一次")
+    ok("3600" not in r6["queries"],
+       "只应前置**首个**数字 token,第二个不应自成一整路: %r" % (r6["queries"],))
+
+    # (f) **截断优先级钉子**:保席位路多于 max_routes 时,按 `_TRUNC_PRIORITY`
+    #     再裁一刀 —— 原句路优先于 token 路。依据:ADR-0009 决策 3「原句路保席位,
+    #     截断时不被挤掉」是改动前就成立的硬契约,本轮不得破坏。
+    #     ⚠️ 这里最初写成"max_routes=1 应保留 token 路",是**按错误行为写的断言**:
+    #     前缀切片恰好会把 token 切出来,而它同时**静默删掉了原句路**。
+    #     修法见 `_routes._truncate_routes`(全仓唯一的路截断实现)。
+    r7, _ = _patched_search(("2510 应用为禁用状态[网关]",), product_id=93, budget=10,
+                            max_routes=1)
+    ok(r7["queries"] == ["2510 应用为禁用状态[网关]"],
+       "max_routes=1 时必须留**原句路**(ADR-0009 决策 3:原句路保席位),实为 %r"
+       % (r7["queries"],))
+    r8, _ = _patched_search(("2510 应用为禁用状态[网关]",), product_id=93, budget=10,
+                            max_routes=2)
+    ok(r8["queries"] == ["2510", "2510 应用为禁用状态[网关]"],
+       "max_routes=2 时应留原句路 + token 路(且 token 仍居执行首位),实为 %r"
+       % (r8["queries"],))
+    # 无 token 时的截断行为不得回归(改动前 max_routes=1 留的就是原句路)。
+    r9, _ = _patched_search((PROBE_MULTI_ROUTE,), product_id=93, budget=10, max_routes=1)
+    ok(r9["queries"] == [PROBE_MULTI_ROUTE],
+       "无 token 时 max_routes=1 应留原句路,实为 %r" % (r9["queries"],))
+
+
+@case("offline: read 的 budget 契约与 search 同义(库入口 + CLI 入口)")
+def t_read_budget_contract():
+    """**T5 第 1 条的回归钉子**(2026-09-28)。
+
+    修前:同一公开面里同名参数**两套契约** ——
+        core.search(..., budget=3)  -> 正常
+        core.read(..., budget=3)    -> AttributeError: 'int' object has no attribute
+                                       'acquire'
+    且被 `cli._guard` 归为 `internal_error`「这是 bug 而非用法问题」,把排查方向带偏;
+    CLI 侧当时也没有 `read --budget`,故**只能由库调用触发、零测试覆盖**。
+
+    修后两入口共用 `_public._as_budget`;CLI 侧补了 `read --budget`。
+
+    ⚠️ 本用例只断言**归一化与错误分类**,不打上游(budget=0 恰好是零请求,可离线验证)。
+    """
+    cp = _impl()
+    # ① 库入口:非法 budget 抛公开异常(不是裸 TypeError/AttributeError)。
+    for bad in ("x", -1.5, object()):
+        try:
+            core.read("knowledge", "6226", budget=bad)
+        except core.InternalError:
+            continue
+        except Exception as e:
+            raise Fail("read(budget=%r) 抛 %s(应为 InternalError:非法入参)"
+                       % (bad, type(e).__name__))
+        raise Fail("read(budget=%r) 未报错(非法 budget 被静默接受)" % (bad,))
+    # ② budget=0:零上游请求 → 必须抛**公开**异常且**不得漏出内部类**。
+    #    内部信号是 `_BudgetExhausted`,它不在 core.__all__ 里,漏出去调用方没法分类。
+    try:
+        core.read("knowledge", "6226", budget=0)
+    except (core.UpstreamError, core.InternalError) as e:
+        ok(type(e).__name__ in ("UpstreamError", "InternalError"),
+           "budget=0 抛出的应是公开异常类,实为 %r" % (type(e).__name__,))
+        ok(not isinstance(e, cp._BudgetExhausted),
+           "budget=0 漏出了内部异常类 _BudgetExhausted(不在 core.__all__ 内)")
+    except Exception as e:
+        raise Fail("read(budget=0) 漏出内部异常 %s: %s" % (type(e).__name__, e))
+    else:
+        raise Fail("read(budget=0) 未报错(零上游请求却成功了?)")
+    # ③ 签名承诺:read 必须接受 budget 形参(修前它接受了却用不对)。
+    import inspect
+    ok("budget" in inspect.signature(core.read).parameters,
+       "read 签名缺 budget 形参")
+    # ④ CLI 侧:两个入口都得有 --budget(修前 read 没有,故库入口的缺陷无人发现)。
+    #    ⚠️ `--help` 的文本走 stdout 而**不是** JSON(它不是命令载荷),
+    #    故这里用 subprocess 直接抓文本,不复用 cli() 的 JSON 解析。
+    for cmd in ("search", "read"):
+        p = subprocess.run([PY, RUN, cmd, "--help"], cwd=REPO, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=60)
+        ok("--budget" in (p.stdout or ""),
+           "kd %s --help 未列出 --budget(search/read 两入口应对称)" % cmd)
+    # ⑤ budget=0 走 CLI 时的**退出码分类**:预算不足不是用法错误(不得是 2)。
+    code, d, _err = cli("read", "6226", "--budget", "0")
+    ok(code == 1,
+       "kd read --budget 0 应 exit 1(上游/预算问题),实测 %r —— "
+       "归成 2(用法错误)会把排查方向带偏" % code)
+    if d is not None:
+        ok((d.get("error") or {}).get("code") != "usage",
+           "kd read --budget 0 被归成用法错误: %r" % (d.get("error"),))
+
+
+@case("offline: 装机数据文件齐全且与仓库同源(漏拷=装出来的行为不同)")
+def t_install_data_files():
+    """**装机同步钉子**。
+
+    治的病有两次实证:
+      * `install.sh` 的注释说"检查两个数据文件",代码**只查了 query_routes.json**
+        —— 察觉到一半(`contract.json` 缺失时 health 冒烟不受影响,抓不住);
+      * 本轮又踩了一次:改完 `SKILL.md` / `contract.json` 后忘了重跑安装,
+        仓库版与安装版 md5 不同 —— **改的是仓库,跑的还是旧版**。
+
+    本条钉两件事(都不联网、不依赖"当前机器恰好装过"):
+      ① 装机脚本的校验**真的覆盖两个数据文件**(源码级:两个文件名都在校验段出现);
+      ② `contract.json` 的键集必须**能被代码从包内读到** —— 即它是随包走的,
+         而不是只存在于仓库(测试/文档目录装机后就没有)。
+    """
+    sh = open(os.path.join(REPO, "install.sh"), encoding="utf-8").read()
+    ps1 = open(os.path.join(REPO, "install.ps1"), encoding="utf-8").read()
+    for name, src in (("install.sh", sh), ("install.ps1", ps1)):
+        # 必须同时校验两个数据文件(缺一个 = 注释与代码不符)。
+        ok("query_routes.json" in src and "contract.json" in src,
+           "%s 的校验段未同时覆盖 query_routes.json 与 contract.json" % name)
+    # ② 两个数据文件都必须**物理存在于包内目录**(随包走,装机才拷得到)。
+    for f in ("query_routes.json", "contract.json"):
+        ok(os.path.exists(os.path.join(SRC, "kd", f)),
+           "包内缺 %s —— 它不在 src/kd/ 里,装机脚本无论怎么校验都拷不到" % f)
+    # ③ 声明能被代码读到(不是"文件在但读不到")。读失败会静默回落兜底集,
+    #    故这里断言"读到的声明非空",否则回落会被误认为同步成功。
+    cp = _impl()
+    ok(cp.result_keys() and cp.top_keys() and cp.default_product_id() is not None,
+       "包内 contract.json 未被代码读到(声明为空 → 已静默回落兜底集)"
+       "—— 装机后字段集会与开发时不同而无任何信号")
+
+
+@case("offline: 挑选判据在文档里、且显式声明挑选权在调用方(ADR-0015)")
+def t_selection_rule_in_docs():
+    """**T6 的钉子**(ADR-0015)。
+
+    「按标题挑」是用户规划的 7 步里**唯一长期无机制**的一步:步骤存在,但没有判据、
+    没有检查、没有测试面。
+
+    ADR-0015 把它定为**文档判据、内核零感知**,故本条的验收方式只能是"文档自洽 +
+    边界未被越过",而不是行为断言(理由见 ADR-0015「为什么不给挑选判据建测试面」)。
+
+    钉三件事:
+      ① 判据存在(不是一句"你自己挑吧");
+      ② 文档**显式声明**挑选权在调用方 —— 这是边界的文字载体;
+      ③ 判据第 3 条与 ANSWER-SPEC 第 7 条(根因引用规则)不冲突 —— 同一事实不许两套。
+    """
+    skill = open(os.path.join(REPO, "skills", "kingdee-knowledge", "skills",
+                              "kingdee-knowledge", "SKILL.md"), encoding="utf-8").read()
+    spec = open(os.path.join(REPO, "docs", "ANSWER-SPEC.md"), encoding="utf-8").read()
+    adr = os.path.join(REPO, "docs", "adr", "0015-挑选判据归属.md")
+    ok(os.path.exists(adr), "缺 ADR-0015 —— 挑选判据的边界没有决策记录")
+
+    # ① 判据存在:几个关键动作点必须都写到(不是泛泛一句"挑最相关的")。
+    for probe in ("挑选判据", "读够就停", "根因引用规则", "routesDegraded"):
+        ok(probe in skill,
+           "SKILL.md 的挑选判据未覆盖 %r —— 判据必须覆盖到可执行的动作点" % probe)
+
+    # ② 边界必须写在文档上:挑选权在调用方,内核不替它挑。
+    ok("内核**不替你挑**" in skill or "内核不替你挑" in skill,
+       "SKILL.md 未显式声明『内核不替你挑』—— 这是 ADR-0015 决策 2 的文字载体,"
+       "缺了它后人会以为可以给内核加推荐排序")
+    ok("ADR-0008" in skill or "ADR-0013" in skill,
+       "SKILL.md 未引用挑选权的决策依据(ADR-0008/ADR-0013)")
+
+    # ③ 与 ANSWER-SPEC 第 7 条不冲突:根因只能引 knowledge,question 只做症状对齐。
+    ok("只引 question 不算根因" in spec,
+       "ANSWER-SPEC 第 7 条的根因引用规则被改动 —— 挑选判据第 3 条须同步(ADR-0015)")
+    ok("症状对齐" in skill and "症状对齐" in spec,
+       "『症状对齐』这一口径在 SKILL.md 与 ANSWER-SPEC 之间不一致")
+
+    # ④ 反向钉子:内核**不得**出现"推荐/该读/打分"这类挑选机制(ADR-0015 决策 2)。
+    #    用**标识符级**匹配而不是子串匹配:`topKeys`(顶层键集)含 "topK" 字样却完全
+    #    无关,子串匹配会假红——这正是"检查写得太粗会变成假信号"的实例。
+    import re as _re
+    banned_ids = ("topk", "top_k", "recommended", "pick_best", "rerank", "score")
+    for mod in ("_manifest.py", "_routes.py", "_public.py", "_config.py"):
+        src = open(os.path.join(SRC, "kd", "_impl", mod), encoding="utf-8").read()
+        # 只取代码行(丢掉注释与字符串里的正当讨论——禁令说明本身就写着这些词)。
+        code_lines = []
+        for ln in src.splitlines():
+            s = ln.split("#", 1)[0]
+            code_lines.append(s)
+        code = "\n".join(code_lines)
+        ids = set(m.group(0).lower() for m in _re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", code))
+        hit = sorted(ids & set(banned_ids))
+        ok(not hit,
+           "%s 出现挑选机制标识符 %r —— 内核不得产出『该读哪篇』的任何形式"
+           "(ADR-0015 决策 2:打分/截断/推荐字段都是越界)" % (mod, hit))
+
+
+@case("offline: 声明与兜底键集一致 —— 两份独立抄本不得漂移(真交叉核对)")
+def t_contract_fallback_in_sync():
+    """`contract.json` 的声明与 `_config` 的内置兜底集必须一致。
+
+    兜底集的存在理由是"声明文件缺失时内核不炸";代价是**同一个事实有了两份**。
+    本用例就是那份代价的对价:任一处漂移即红,不靠人工誊抄比对。
+
+    ⚠️ **2026-09-28 修:本用例此前是恒绿的重言式。** 它拿 `cp.result_keys()` 去比
+    `_CONTRACT["search"]["resultKeys"]`,而 `result_keys()` 的实现就是
+    `_contract().get("search")["resultKeys"] or list(_FALLBACK_RESULT_KEYS)` ——
+    **只要声明文件能读,兜底集根本不参与**,两份被比的是同一个值。实测:
+    从声明删掉 `products` 后,只有"三段对账"变红,本条**照样绿**,而它的注释
+    自称"兜底集与声明的漂移会被抓住"。那是**回声与回声自比**(与 T4 修的是同一种病)。
+
+    修法:比对的必须是**兜底常量本身**(`_FALLBACK_RESULT_KEYS` /
+    `_FALLBACK_FORBIDDEN_KEYS`),而不是经过声明覆盖后的读取结果。
+    另加一条**反向验证**:模拟"声明文件读不到"的场景,断言此时读到的
+    正是兜底集 —— 否则"兜底"这个卖点从未被验证过。
+    """
+    cp = _impl()
+    declared_keys = tuple(_CONTRACT["search"]["resultKeys"])
+    declared_forbidden = tuple(_CONTRACT["search"]["resultForbiddenKeys"])
+
+    # ① 真实比对:兜底常量 vs 声明(两份独立来源)。
+    ok(tuple(cp._FALLBACK_RESULT_KEYS) == declared_keys,
+       "内置兜底 resultKeys 与 contract.json 声明漂移:\n  兜底 %r\n  声明 %r\n"
+       "▶ 兜底集是『声明文件缺失时』生效的那份,它漂移会让装了漏拷的机器行为不同。"
+       % (tuple(cp._FALLBACK_RESULT_KEYS), declared_keys))
+    ok(tuple(cp._FALLBACK_FORBIDDEN_KEYS) == declared_forbidden,
+       "内置兜底 resultForbiddenKeys 与声明漂移:\n  兜底 %r\n  声明 %r"
+       % (tuple(cp._FALLBACK_FORBIDDEN_KEYS), declared_forbidden))
+
+    # ② 读取路径仍要正确(声明在时用声明)。
+    ok(tuple(cp.result_keys()) == declared_keys,
+       "result_keys() 与 contract.json 声明不一致:\n  代码 %r\n  声明 %r"
+       % (cp.result_keys(), declared_keys))
+    ok(tuple(cp.result_forbidden_keys()) == declared_forbidden,
+       "result_forbidden_keys() 与声明不一致:\n  代码 %r\n  声明 %r"
+       % (cp.result_forbidden_keys(), declared_forbidden))
+    ok(tuple(cp.top_keys()) == tuple(_CONTRACT["search"]["topKeys"]),
+       "top_keys() 与声明不一致")
+    ok(cp.default_product_id() == DEFAULT_PRODUCT_ID,
+       "default_product_id() 与声明不一致")
+
+    # ③ 兜底路径**真的会生效**吗?把声明读成空后,读到的必须恰是兜底集。
+    #    没有这条,"兜底"就只是个从未被执行过的分支。
+    #
+    # ⚠️ 必须改**模块全局**(`kd._impl._config._CONTRACT`),不能改 `cp._CONTRACT`:
+    # 观测口导出的是**值的副本**,`_contract()` 读的是它自己模块的全局变量,
+    # 改包属性对已 import 的函数无效(实测:改 cp._CONTRACT 后 link_for 仍回 'link')。
+    import kd._impl._config as _cfg_mod
+    real = _cfg_mod._CONTRACT
+    try:
+        _cfg_mod._CONTRACT = {}
+        ok(tuple(cp.result_keys()) == tuple(cp._FALLBACK_RESULT_KEYS),
+           "声明为空时 result_keys() 应回落兜底集:\n  实得 %r\n  兜底 %r"
+           % (cp.result_keys(), tuple(cp._FALLBACK_RESULT_KEYS)))
+        ok(tuple(cp.result_forbidden_keys()) == tuple(cp._FALLBACK_FORBIDDEN_KEYS),
+           "声明为空时 result_forbidden_keys() 应回落兜底集")
+        ok(cp.default_product_id() == 93,
+           "声明为空时 default_product_id() 应回落 93,实为 %r" % (cp.default_product_id(),))
+        # 链接政策同理:声明缺失时保守方向是"全部不给链接"(少给一个链接
+        # ≠ 多给一个死链)。
+        ok(cp.link_for("knowledge") == "no-link" and cp.link_for("article") == "no-link",
+           "声明为空时链接政策应保守回落 no-link,实为 %r/%r"
+           % (cp.link_for("knowledge"), cp.link_for("article")))
+    finally:
+        _cfg_mod._CONTRACT = real
+
+    # ④ 键集自洽:允许集与禁止集不得有交集(有交集则同一键既允许又 FAIL,自相矛盾)。
+    overlap = RESULT_KEYS & RESULT_FORBIDDEN_KEYS
+    ok(not overlap, "声明自相矛盾:这些键同时在 resultKeys 与 resultForbiddenKeys: %s"
+       % sorted(overlap))
+    ok(len(declared_keys) >= 5, "声明键集为空或过短,断言失去意义: %r" % (declared_keys,))
+    # ⑤ 兜底集必须真的与声明同长(防"两边都空"时上面①假绿)。
+    ok(len(cp._FALLBACK_RESULT_KEYS) >= 5,
+       "内置兜底键集过短或为空,① 会失去意义: %r" % (tuple(cp._FALLBACK_RESULT_KEYS),))
 
 
 @case("offline: 标题解析降级链 —— 纯高亮壳/空缺/点号键都不产生静默空标题")
@@ -558,11 +1550,11 @@ def t_title_of_fallbacks():
     ok(cp._title_of("<em>禁用</em>") == "禁用", "纯标签壳应剥出文本")
     # ④ 全空 → None(不是空串:契约里字段可为 None,但不得是"" 这种"看起来有值"的形态)
     ok(cp._title_of(None, "", "   ") is None, "全空候选应返回 None")
-    # ⑤ answer 条目走真实 _norm_item:标题必须非空
+# ⑤ 问答条目走真实 _norm_item:标题必须非空(喂上游值 "answer")。
     a = cp._norm_item(_syn("answer", 900, qid=800, title="帖子标题"), "answer")
-    ok(a["title"] == "帖子标题", "answer 条目标题解析失败: %r" % (a["title"],))
+    ok(a["title"] == "帖子标题", "问答条目标题解析失败: %r" % (a["title"],))
     # ⑥ 上游把标题平铺在条目顶层(assistant 形状变体)也要兜住
-    raw = {"entity-type": "answer", "id": "1", "questionId": "2",
+    raw = {"entity-type": "Answer", "id": "1", "questionId": "2",
            "highlight": {}, "question": {"id": "2"}, "title": "平铺标题"}
     ok(cp._norm_item(raw, "answer")["title"] == "平铺标题", "顶层平铺标题未被兜住")
 
@@ -741,257 +1733,160 @@ def _expect_upstream(effective):
     唯一映射规则:0 与 None **都**表示"不带产品过滤",故上游一律省略该参数(None)。
     传 `productIds[0]=0` 会被上游当真值过滤(实测把 Knowledge 挤出前排)——
     这正是"不过滤"与"过滤到 0 号产品"的语义分界。
+
+    ⚠️ 值域三态(2026-09-27 修复后,must 记住):
+      * `None` = 显式不过滤(Python 侧的 `product_id=None`);
+      * `0`    = 显式不过滤(CLI 侧的 `--product 0`);
+      * 省略参数 = 默认 93(由**签名默认值**承担,不是由 None 折成)。
+    早期实现把 None 折成默认 93,使 Python 调用方无法表达"不过滤"(实测 total
+    31788 → 6326,过滤被静默加上)。
     """
     return None if effective in (0, None) else effective
 
 
-@case("offline: effectiveProductId 回显**推导后**实际生效值(默认93/苍穹87/显式0)")
-def t_effective_product_id_derived():
-    """**本轮第 6 条硬证据**(spec 第 3.3 节)。
+@case("offline: effectiveProductId 恒等于调用方传入值(内核不做字面推导)")
+def t_effective_product_id_passthrough():
+    """**本轮核心行为变更之一**(决策 D14,2026-09-27)。
 
-    `effectiveProductId` 经裁决补回顶层(spec 第 3.3 节),它存在的全部理由就是
-    ANSWER-SPEC 第 8 条的那句「引用与合成前核对产品线」。因此它的语义是硬约束:
+    旧契约:该键回显的是 `_plan_routes` **字面推导后**的值——问句里出现「苍穹」
+    会被改写成 87(即使调用方没传 `--product`)。旧用例钉的正是"必须回显推导值,
+    不得回显入参"。
 
-      **必须回显「推导后实际生效」的值,不得回显调用方传入的原始值。**
+    新契约:**内核不做任何字面产品线推导**,`_derive_product_id` 连同别名表与
+    "先出现优先"裁决规则整体删除。故:
 
-    为什么这条断言值得单列:`_plan_routes` 会在问句里出现产品别名(「苍穹」等)时
-    **覆盖**默认 93。若实现图省事写成"原样回显入参",三态里的第二态(87)就会退化成
-    93 —— 调用方拿它去核对产品线会**得到错误的安心感**,而这正是 2026-09-06 旗舰版
-    串线事故的形态。这种回归在联网用例里也难发现(默认态 93 恰好正确),故用离线
-    三态钉死。
+      * 该键**恒等于调用方传入值**;**不传即默认 93**(不是 None);
+      * 问句里出现「苍穹」**不再**改变它——产品线由调用层(LLM)判定后显式传;
+      * 显式 `0` 仍是真不过滤;显式任何值都直通。
 
-    三态实证(2026-09-18 实测):
-      ① 默认(不带 product_id)     → 93(旗舰版,默认值)
-      ② 问句含「苍穹」             → 87(别名**覆盖**默认)
-      ③ 显式 product_id=0          → 0(真不过滤;唯一能拿到不过滤的方式)
-    另补第 ④ 态:显式 None → None(未带任何过滤),与 0 值域区分。
+    ⚠️ 为什么敢删掉字面推导(而不是"留着但默认关"):字面匹配猜的是一句话里有没有
+    产品名,而这件事调用层比规则懂;判定错误等于拿完全不同的语料作答(实测同问句下
+    `--product 87` 与 `93` 的 top10 **零交集**)。留一个"偶尔猜对"的隐式改写,比
+    没有它更危险——它会让调用方以为自己不传也能对。
 
     纯离线:monkeypatch `_search_upstream` 拦掉上游出口,零网络请求。
 
-    ⚠️ monkeypatch 陷阱(实测结论,别再踩):本实现里有**两种**解析方式,
-    换错地方会静默失效(负控跑出假绿):
-      · `_search_upstream` 走 `_manifest._resolve()` → 解析点是**包命名空间**,
-        故替换 `kd._impl._search_upstream`(包属性)**有效**(`_patched_search` 用这条);
-      · `_search_manifest` 在 `_public` 里是 **import 期局部绑定**,
-        故替换包属性或 `_manifest` 子模块属性**都无效**,必须改 `kd._impl._public`
-        的同名全局才能让负控生效。
-    本用例只 patch 前者。已用负控验证区分度:把 `effectiveProductId` 改成
-    "原样回显入参"后,第②态(苍穹→87)立刻红并报出实得 93。
+    ⚠️ monkeypatch 陷阱(实测结论,别再踩):`_search_upstream` 走
+    `_manifest._resolve()` → 解析点是**包命名空间**,故替换 `kd._impl._search_upstream`
+    (包属性)有效(`_patched_search` 用这条)。
     """
-    # 注:第①态是"省略 product_id 参数"(而非省略 text)—— text 与 keywords
-    # 二选一是另一条契约(search 至少要有一个检索词,否则 InternalError)。
+    # ⚠️ 第①态按**新**契约期望 93(旧用例期望 93 是"默认兜底",巧合相同;
+    # 但第②态必须从 87 变成 93 —— 那才是本轮真正的行为反转)。
     cases = (
-        ("默认(省略 --product)", (PROBE_DEGRADED,), {}, 93),
-        ("问句含「苍穹」(别名覆盖默认)", ("苍穹 " + PROBE_DEGRADED,), {}, 87),
-        ("显式 product_id=0(真不过滤)", (PROBE_DEGRADED,), {"product_id": 0}, 0),
-        ("显式 product_id=None(未带过滤)", (PROBE_DEGRADED,), {"product_id": None}, None),
+        ("默认(省略 --product)→ 默认值", (PROBE_DEGRADED,), {}, DEFAULT_PRODUCT_ID),
+        ("问句含「苍穹」但未显式传 → **不再改写**", ("苍穹 " + PROBE_DEGRADED,), {},
+         DEFAULT_PRODUCT_ID),
+        ("显式 87 直通", (PROBE_DEGRADED,), {"product_id": 87}, 87),
+        ("显式 1 直通", (PROBE_DEGRADED,), {"product_id": 1}, 1),
+        ("显式 2 直通", (PROBE_DEGRADED,), {"product_id": 2}, 2),
+        ("显式 0(真不过滤)", (PROBE_DEGRADED,), {"product_id": 0}, 0),
     )
     for label, args, kw, want in cases:
         kw = dict(kw, budget=10)
         r, seen = _patched_search(args, **kw)
         got = r["effectiveProductId"]
         ok(got == want,
-           "%s: effectiveProductId 应为推导后实际生效值 %r,实为 %r\n"
-           "      注:回显调用方入参而非推导结果会让「别名覆盖默认」不可见——"
-           "该键存在的唯一理由就是让调用方核对产品线(spec 第 3.3 节)"
+           "%s: effectiveProductId 应为 %r,实为 %r\n"
+           "      注:内核不做字面推导,该键恒等于调用方传入值(不传即默认)"
            % (label, want, got))
         # 与上游实际收到的过滤保持一致:回显值必须**真的是**本次生效的过滤,
         # 否则调用方核对的是个装饰性字段。
         #
-        # ⚠️ 两套值域**有意不同**,不是脱节(2026-09-18 实测确认):
-        #   `effectiveProductId` 用**调用方词汇**(--product 值域):0 是"我显式要求不过滤";
-        #   而上游只认"带 productIds[0] 过滤"或"省略该参数",故 0 与 None 都必须
-        #   省略参数(传 `productIds[0]=0` 上游会当真值过滤,把结果挤出前排)。
-        # 故映射是 `0 → 省略(None)`,而非逐字相等。这条映射本身就是契约,
-        # 由下面的 `_expect_upstream` 显式写出,避免用"相等"这个错误口径去测它。
+        # ⚠️ 两套值域**有意不同**,不是脱节:`effectiveProductId` 用**调用方词汇**
+        # (`--product` 值域):0 是"我显式要求不过滤";而上游只认"带 productIds[0]
+        # 过滤"或"省略该参数",故 0 必须省略参数(传 `productIds[0]=0` 上游会当真值
+        # 过滤,把结果挤出前排)。这条映射本身就是契约,由 `_expect_upstream` 显式写出。
         for c in seen:
             ok(c["product_id"] == _expect_upstream(want),
                "%s: 回显 effectiveProductId=%r,其对应的上游过滤应为 %r,实收 %r"
                % (label, got, _expect_upstream(want), c["product_id"]))
 
-    # 反向钉子:别名推导不得只是"巧合等于默认"——两个产品线的值必须不同,
-    # 否则上表第 ①②态本就会同时通过,断言失去区分度。
-    ok(cases[0][3] != cases[1][3], "本用例需要「默认」与「别名」两个值不同,否则无区分度")
-    # 值域契约:整数或 None(与 --product 同值域,可直接比对),
-    # 而不是字符串/中文类目名——那正是 results[].products 不可替代的原因。
+    # ⚠️ 区分度钉子:第①②态的期望值**相同**(都是默认值),故必须另有一条断言
+    # 证明"问句含苍穹"与"显式传 87"确实不同——否则本用例无法区分新旧实现
+    # (旧实现下第②态会得 87;若本用例只断言 93,则新旧都能过)。
+    _r_same, _ = _patched_search(("苍穹 " + PROBE_DEGRADED,), budget=10)
+    _r_87, seen87 = _patched_search((PROBE_DEGRADED,), product_id=87, budget=10)
+    ok(_r_same["effectiveProductId"] != _r_87["effectiveProductId"],
+       "问句含「苍穹」与显式传 87 应得到不同的有效产品线(证明不再字面推导),"
+       "实得 %r vs %r" % (_r_same["effectiveProductId"], _r_87["effectiveProductId"]))
+    ok(all(c["product_id"] == 87 for c in seen87), "显式 87 必须真的传到上游")
+
+    # 值域契约:整数(与 --product 同值域,可直接比对),而不是字符串/中文类目名
+    # ——那正是 results[].products 不可替代的原因。
     r, _ = _patched_search((PROBE_DEGRADED,), budget=10)
     ok(not isinstance(r["effectiveProductId"], str),
        "effectiveProductId 不得是字符串(须与 --product 同值域以便直接比对)")
-    # keywords 入口同样带回推导值(显式关键词路径与规则路径同权携带 productIds)。
+    ok(r["effectiveProductId"] == DEFAULT_PRODUCT_ID,
+       "不传 --product 时应为默认值 %r,实为 %r" % (DEFAULT_PRODUCT_ID, r["effectiveProductId"]))
+    # keywords 入口同样直通。
     rk, seenk = _patched_search((), keywords=["A"], product_id=87, budget=10)
     ok(rk["effectiveProductId"] == 87, "keywords 入口应回显 87,实为 %r" % (rk["effectiveProductId"],))
     ok(all(c["product_id"] == 87 for c in seenk), "keywords 路的过滤应与回显一致")
 
 
-@case("offline: 产品线推导两分支同权 —— keywords 入口不再绕过推导(缺陷 E)")
-def t_product_derivation_shared_exit():
-    """**缺陷 E 的回归钉子**(2026-09-27 修)。
+@case("offline: 产品线字面推导已整体删除(_derive_product_id 不存在)")
+def t_product_derivation_removed():
+    """**删除的回归钉子**(决策 D14,2026-09-27)。
 
-    实证:`_plan_routes` 的 `keywords` 分支**提前 return**,跳过了别名推导——
-    而这条分支恰好是"LLM 拆好词后传进来"的入口,即本轮新方向要走的那条路。
-    后果:问「苍穹 …」并把词拆好递进来,产品线回落成默认 93(旗舰版),
-    拿苍穹的问题去搜旗舰版资料再当苍穹答案输出(2026-09-06 串线事故的形态)。
+    这条用例的方向与常见的"钉住某个能力"相反:**它钉住某个能力必须不存在**。
 
-    契约:产品线推导是**两条分支共用的公共出口**(`_derive_product_id`),
-    `text` 相同则推出的产品线相同,与走哪条入口无关。
+    为什么值得钉:`_derive_product_id` 曾是一套有实际后果的机制——产品线判定直接
+    改变全部召回语料,而它只靠"问句里有没有产品名"这种字面匹配。它被移除的理由是
+    调用层能判得更准;若将来有人"顺手把它补回来"(看起来像是在提升召回),那会
+    静默地把调用方显式传的产品线又改回去,而**没有任何断言会发现**。
+
+    三层都要钉:
+      ① 函数不可经观测口取到;
+      ② `query_routes.json` 不再有 `productAliases` 段(推导的数据源);
+      ③ 行为上问句里的产品词不再改变 effectiveProductId(由上一用例覆盖,此处不重复)。
     """
-    import kd._impl as _implpkg
-    plan = _implpkg._plan_routes
-    # 同一个含「苍穹」的整句,分别走两条入口,推导结果必须一致。
-    qtext = "苍穹 生产单位数量 分母变平方"
-    _r_kw, pid_kw = plan(text=qtext, keywords=["生产单位数量", "分母"])
-    _r_rule, pid_rule = plan(text=qtext, keywords=None)
-    ok(pid_kw == pid_rule == 87,
-       "keywords 入口与规则入口的产品线推导应同为 87(苍穹),实为 %r vs %r"
-       "——keywords 分支绕过推导会让 LLM 拆词入口静默串线" % (pid_kw, pid_rule))
-
-    # ⚠️ **第二条通道**(独立验证发现,2026-09-27 补修):只给 `--kw` 时 `text` 为空,
-    # 而第 1 个关键词**升格为原句路**(缺陷 D)。推导源若只看 `text` 就漏了它——
-    # 实测修前:`search --kw "苍穹 XXX"` → 93,而 `search "苍穹 XXX"` → 87。
-    # 同一个整句、两条命令行、产品线不同,且两者第 1 路 terms 逐字相同。
-    _r_only_kw, pid_only_kw = plan(text=None, keywords=[qtext, "分母"])
-    ok(pid_only_kw == 87,
-       "只给 keywords 时,升格为原句路的第 1 个关键词含「苍穹」应推出 87,实为 %r"
-       "——该通道是 SKILL.md 推荐的 LLM 拆词入口,漏推会让整轮静默用错产品线"
-       % (pid_only_kw,))
-
-    # ⚠️ **产品词不在第 1 个关键词里**(独立验证指出:仅用 keywords[0] 会漏推)。
-    # 这条是"推导源必须扫全部 keywords、而不只是 keywords[0]"的钉子——
-    # 实测把推导源改成 `text or keywords[0]` 后,本条会红(其余用例仍绿)。
-    _r_kw_any, pid_kw_any = plan(text=None, keywords=["生产单位数量", "苍穹"])
-    ok(pid_kw_any == 87,
-       "产品词在第 2 个关键词里也必须被扫到(不能只看 keywords[0]),实为 %r" % (pid_kw_any,))
-
-    # ⚠️ **优先级:text 里说的话 > 拆出的关键词片段**(独立验证建议的层级)。
-    # 若把各源拼成一维串再扫,本条会因 dict 序让「旗舰版」压掉 text 说的「苍穹」。
-    _r_prio, pid_prio = plan(text="苍穹 A", keywords=["A", "旗舰版"])
-    ok(pid_prio == 87,
-       "text 明确说「苍穹」时,不应被某个 --kw 里的「旗舰版」压掉(期望 87,实为 %r)"
-       "——拼成一维串会丢掉「谁说的」这层信息" % (pid_prio,))
-
-    # 反例对照:不含任何产品别名的问句应回落默认,证明上一条不是"恒等于 87"的假绿。
-    _r2, pid_none = plan(text="生产单位数量 分母变平方", keywords=["分母"])
-    ok(pid_none != 87,
-       "无产品别名的问句不应推出 87,实为 %r(该对照用来证明上一条断言有区分度)" % (pid_none,))
-
-    # ⚠️ **产品词在句中**(独立验证的 N15 变异逃逸发现):上面三条钉子的产品词**全在
-    # 源的开头**,于是把子串匹配收窄为 `startswith` 的变异能**全绿逃逸**。而
-    # 「查询苍穹的生产单位数量」是最自然的中文问句形态——产品词在句中。
-    # 补这条以封堵该逃逸面。
-    _r_mid, pid_mid = plan(text="查询苍穹的生产单位数量", keywords=None)
-    ok(pid_mid == 87,
-       "产品词出现在句中(非开头)也必须推出 87,实为 %r"
-       "——只匹配开头的实现会在此静默落回默认 93" % (pid_mid,))
-    _r_mid2, pid_mid2 = plan(text=None, keywords=["关于苍穹的插件问题", "分母"])
-    ok(pid_mid2 == 87,
-       "keywords 路的产品词在句中同样要推出 87,实为 %r" % (pid_mid2,))
+    cp = _impl()
+    ok(not hasattr(cp, "_derive_product_id"),
+       "实现包里仍可解析 _derive_product_id —— 字面产品线推导应已整体删除(决策 D14)")
+    cfg = cp._route_cfg()
+    ok("productAliases" not in cfg,
+       "query_routes.json 仍有 productAliases 段(推导的数据源): %r"
+       % (sorted(cfg.keys()),))
+    # ⚠️ 诚实说明本条的能力边界(避免给出虚假安心):它抓的是"函数被搬回**实现包**"
+    # 这一形态。若有人把同样逻辑换个名字写在别处,本用例不会红——那种情况只能靠
+    # 上一用例的**行为**断言(effectiveProductId 恒等于入参)兜住。
+    # 两层各覆盖一半,合起来才是完整防线;单看任何一层都不够。
 
 
-@case("offline: 多产品别名同现的裁决规则(先出现优先;不依赖配置顺序)")
-def t_multi_alias_arbitration():
-    """一个源里同时出现多个产品别名时的裁决规则。
+@case("offline: product_id 直通两条分支 —— keywords 入口与规则入口同权直通")
+def t_product_id_passthrough_both_branches():
+    """`product_id` 直通必须对 `_plan_routes` 的**两条分支**都成立。
 
-    **为什么需要这条规则**(独立验证的 N21 变异逃逸发现):原实现「取别名表的第一个命中」,
-    而别名表的顺序来自 `query_routes.json` 里 dict 的**字面量书写顺序**——那不是任何人
-    承诺过的契约。实测把遍历序反转,`"苍穹 旗舰版"` 的结果就从 93 变成 87,而**全部回归
-    依然全绿**(没有钉子守着)。而产品线判定直接决定召回语料(实测 87 与 93 在同类问句下
-    top10 零交集),故"靠配置顺序偶然固定"是不可接受的。
+    ⚠️ 为什么单列:历史上正是这条分支出过事故——`keywords` 分支曾**提前 return**,
+    绕过了产品线处理(`${旧} 缺陷 E`),导致"LLM 拆好词后传进来"这条最自然的用法
+    拿到错误的召回语料。直通化只改了几个 return 语句,但**两条 return 都要改**;
+    只改一条会让 keywords 入口静默用默认值。
 
-    规则(2026-09-27 定):**取在文本中出现位置最靠前的别名**;位置相同取更长者。
-    选它的理由:不受别名长度偏置,且完全不依赖配置顺序。
+    故这里对同一组 product_id 值,分别走两条入口断言结果一致。
     """
-    import kd._impl as _implpkg
-    derive = _implpkg._derive_product_id
-    cases = (
-        # (来源文本, 期望产品线, 说明)
-        ("苍穹 旗舰版", 87, "「苍穹」在文本中更靠前"),
-        ("旗舰版 苍穹", 93, "「旗舰版」在文本中更靠前"),
-        ("企业版 苍穹", 1, "「企业版」更靠前"),
-        ("苍穹 星空企业版", 87, "「苍穹」更靠前"),
-        ("星空旗舰版", 93, "嵌套:外层长别名在位置 0,胜过其中的「旗舰版」"),
-        ("星空企业版", 1, "嵌套:外层长别名胜出"),
-    )
-    for src, want, why in cases:
-        got = derive([src], 93)
-        ok(got == want, "%r 应推出 %r(%s),实为 %r" % (src, want, why, got))
+    plan = _impl()._plan_routes
+    for pid in (None, 0, 1, 2, 87, 93):
+        _r_kw, got_kw = plan(text=PROBE_DEGRADED, keywords=["生产单位数量", "分母"],
+                             product_id=pid)
+        _r_rule, got_rule = plan(text=PROBE_DEGRADED, keywords=None, product_id=pid)
+        ok(got_kw == pid and got_rule == pid,
+           "product_id=%r 应直通,两分支分别实得 %r / %r(内核对产品线零改动)"
+           % (pid, got_kw, got_rule))
 
-    # 关键性质:**结果不依赖 alias 表的遍历序**。用反转后的别名表重跑,结果必须一致。
-    cp = _implpkg._impl if hasattr(_implpkg, "_impl") else None  # 占位,不使用
-    cfg = _implpkg._route_cfg()
-    aliases = ((cfg.get("productAliases") or {}).get("alias") or {})
-    ok(len(aliases) >= 2, "别名表需至少 2 条才能验证顺序无关性")
-    rev = dict(reversed(list(aliases.items())))
-    cfg.setdefault("productAliases", {})["alias"] = rev
-    try:
-        for src, want, _why in cases:
-            got = derive([src], 93)
-            ok(got == want,
-               "反转别名表后 %r 应仍推出 %r(结果不得依赖配置顺序),实为 %r"
-               % (src, want, got))
-    finally:
-        cfg["productAliases"]["alias"] = aliases  # 还原,避免污染后续用例
-
-
-@case("offline: _derive_product_id 的 sources 契约(误传字符串不静默降级)")
-def t_derive_sources_contract():
-    """`_derive_product_id(sources, …)` 的入参契约。
-
-    **为什么钉这条**(独立验证发现):签名从 `(text, product_id)` 改为
-    `(sources, product_id)` 后,**旧签名调用不报错、静默降级**——
-    `sources` 传字符串时 `for src in sources` 会**逐字符**迭代(`'苍'`、`'穹'`),
-    每个字符都不含多字别名,于是静默返回原值。无异常、无日志、无信号。
-    而全仓原本**没有任何测试直接调用该函数**,这条契约完全无保护。
-    """
-    import kd._impl as _implpkg
-    derive = _implpkg._derive_product_id
-    # 误传字符串:必须与传单元素列表同结果(就地归一),不得静默漏推。
-    ok(derive("苍穹", 93) == 87,
-       "sources 误传字符串时应就地归一(期望 87),实为 %r——逐字符迭代会静默漏推"
-       % (derive("苍穹", 93),))
-    ok(derive("苍穹", 93) == derive(["苍穹"], 93),
-       "字符串与单元素列表必须同结果")
-    # 边界:空源是否被正确跳过(不因空串而误判或崩溃)。
-    ok(derive([], 93) == 93, "空 sources 应原样返回,实为 %r" % (derive([], 93),))
-    ok(derive([None, "", "   "], 93) == 93,
-       "全空源应原样返回,实为 %r" % (derive([None, "", "   "], 93),))
-    # 显式值仍不被推导(与缺陷 F 同权,防止本用例与上一条互相掩盖)。
-    ok(derive("苍穹", 0) == 0 and derive("苍穹", 87) == 87,
-       "显式 0/87 不应被推导覆盖")
-
-
-@case("offline: 显式产品线不被问句字面覆盖(缺陷 F;--product 0 = 真不过滤)")
-def t_explicit_product_not_overridden():
-    """**缺陷 F 的回归钉子**(2026-09-27 修)。
-
-    语义边界:别名推导覆盖的是**默认兜底值**,不是调用方的明确选择。
-
-      修前实证:显式 `product_id=0`(spec 明定的"真不过滤")+ 问句含「苍穹」
-      → 回显 87。显式 0 是唯一能拿到不过滤的方式,被字面改成 87 就等于该语义消失,
-      违反 spec 第 8 条「要真正的不过滤必须显式传 --product 0」。
-
-    契约:只有 `None` / `93`(默认兜底)允许别名推导;任何其他显式值都尊重调用方。
-    这条同时是"调用层 LLM 自行判定产品线"的前提——内核不得用字面匹配二次改写它。
-    """
-    import kd._impl as _implpkg
-    plan = _implpkg._plan_routes
-    qtext = "苍穹 生产单位数量 分母变平方"
-    cases = (
-        ("显式 0(真不过滤)", 0, 0),
-        ("显式 87(苍穹)", 87, 87),
-        ("显式 1(企业版)", 1, 1),
-        ("显式 2(星空二开)", 2, 2),
-        ("默认兜底 93(允许推导)", 93, 87),
-        ("None(允许推导)", None, 87),
-    )
-    for label, given, want in cases:
-        _r, got = plan(text=qtext, keywords=None, product_id=given)
-        ok(got == want,
-           "%s: 传入 product_id=%r 应得 %r,实为 %r"
-           "——显式值被问句字面覆盖会让调用方的产品线判定失效" % (label, given, want, got))
-    # 反向对照:不含别名时,默认兜底 93 必须原样保留(推导不得凭空造值)。
-    _r, keep = plan(text="生产单位数量", keywords=None, product_id=93)
-    ok(keep == 93, "无别名时默认 93 应保留,实为 %r" % (keep,))
-
+    # 过滤真的被挂到每一路上(直通不等于"只是回显")。
+    routes, pid = plan(text=PROBE_DEGRADED, keywords=["生产单位数量", "分母"],
+                       product_id=87)
+    ok(pid == 87, "返回值应为 87")
+    ok(routes, "应至少产出一路")
+    ok(all(r.get("productIds") == 87 for r in routes),
+       "每一路都应携带 productIds=87(否则 --product 会在某些路上静默失效): %r"
+       % ([r.get("productIds") for r in routes],))
+    # 显式 0 = 真不过滤:必须**省略**该参数(挂 0 会被上游当真值过滤)。
+    routes0, pid0 = plan(text=PROBE_DEGRADED, keywords=["生产定义"], product_id=0)
+    ok(pid0 == 0, "显式 0 应直通")
+    ok(all("productIds" not in r for r in routes0),
+       "显式 0 时各路不得携带 productIds(0 会被上游当真值过滤): %r"
+       % ([r.get("productIds") for r in routes0],))
 
 @case("offline: routesDegraded 不因 max_routes 截断而假阳性(缺陷 G)")
 def t_routes_degraded_no_false_positive():
@@ -1089,14 +1984,14 @@ def t_length_boundary():
     # 私有命名空间/拆包,依赖内部名会把外部行为用例退化成结构断言。
     # 100 字符会真实打到上游,故本用例归联网组。
     try:
-        core.search("a" * 100, page=1, page_size=1)
+        core.search("a" * 100)
     except core.QueryTooLong:
         raise Fail("恰好 100 字符被硬闸误判为超限(应放行)")
     except core.UpstreamError:
         pass  # 上游业务错误与"本地硬闸误判"无关:已证明未被本地拦下
     for n in (101, 120):
         try:
-            core.search("a" * n, page=1, page_size=1)
+            core.search("a" * n)
         except core.QueryTooLong as e:
             ok(len(e.clamped) == 100, "%d 字符的 clamped 长度应为 100" % n)
             continue
@@ -1105,23 +2000,27 @@ def t_length_boundary():
         raise Fail("%d 字符未触发 QueryTooLong" % n)
 
 
-@case("online: search 顶层 16 键(含 effectiveProductId)+ 结果项 16 字段 + 无历史残留字段", online=True)
+@case("online: search 顶层 13 键 + 结果项 13 字段(声明派生)+ 无历史残留字段", online=True)
 def t_search_contract():
-    r = core.search(QUERY, product_id=93, page=1, page_size=5)
+    """顶层与条目键集**双向**断言,键集从 contract.json 派生(决策 D13)。
+
+    ⚠️ 本用例不再手写"16 键"这类计数:计数是**声明的影子**,声明一变计数就过期
+    (活证据:d753719 删 3 个字段后测试计数没跟上)。改成"返回键集 == 声明键集",
+    既不用维护数字,又能同时抓到多出与少了。
+    """
+    r = core.search(QUERY, product_id=93)
     ks = keys_of(r, "search")
-    # 顶层键集按 spec 第 3 节**逐字段冻结**,故这里严格到"不得多出一个键"。
-    # 原"三方冲突"告示已于 2026-09-18 撤销:`effectiveProductId` 经裁决**保留**
-    # (spec 第 3.3 节),故它已并入 SEARCH_KEYS,不再是白名单外字段。
     check_subset(ks, SEARCH_KEYS, "search 顶层")
     check_no_extra(ks, SEARCH_KEYS, "search 顶层")
-    ok(len(ks) == 16,
-       "search 顶层应为 16 键(spec 第 3 节),实为 %d 键: %s" % (len(ks), sorted(ks)))
-    ok(isinstance(r["effectiveProductId"], (int, type(None))), 
-       "effectiveProductId 应为 int 或 None(与 --product 同值域),实为 %r" 
-       % (r["effectiveProductId"],))
+    # 与声明逐字一致(强弱两端都断:不得多、不得少)。
+    ok(ks == SEARCH_KEYS,
+       "search 顶层键集应恰等于声明:\n  多出 %s\n  缺 %s"
+       % (sorted(ks - SEARCH_KEYS), sorted(SEARCH_KEYS - ks)))
+    # 分页字段已删(决策 D10)——单独再钉一次:声明改了但代码没改也不会漏。
+    for dead in ("page", "pageSize", "totalPages"):
+        ok(dead not in ks, "search 顶层仍返回已删除的分页字段 %r" % dead)
     ok(r["effectiveProductId"] == 93,
-       "默认(不带 --product)时 effectiveProductId 应回显 93(旗舰版),实为 %r"
-       % (r["effectiveProductId"],))
+       "显式 product_id=93 时 effectiveProductId 应为 93,实为 %r" % (r["effectiveProductId"],))
     ok(r["ok"] is True, "search.ok 应为 True")
     ok(r["text"] == QUERY, "search.text 应回显查询词")
     ok(r["keywords"] is None, "未给 keywords 时 search.keywords 应为 None")
@@ -1130,23 +2029,20 @@ def t_search_contract():
     ok(len(r["queries"]) <= 7, "路数 %d 超过 maxRoutes=7" % len(r["queries"]))
     ok(len(set(r["queries"])) == len(r["queries"]),
        "queries 出现重复检索词(同一请求被发两次,塌缩去重失效): %r" % (r["queries"],))
-    # 本轮新增的两个路数字段(spec 第 3 节)。
     plan = r["routesPlanned"]
     ok(isinstance(plan, int) and 1 <= plan <= 7,
        "routesPlanned 应为 1..7 的整数(计划路数),实为 %r" % (plan,))
     ok(isinstance(r["routesDegraded"], bool), "routesDegraded 应为 bool")
-    # 塌缩的定义式:实际路数 < 计划路数 ↔ routesDegraded 为真(双向都要成立)。
     ok(r["routesDegraded"] == (len(r["queries"]) < plan),
        "routesDegraded(%r)与「实际路数(%d) < 计划路数(%d)」不一致"
        % (r["routesDegraded"], len(r["queries"]), plan))
-    ok(r["page"] == 1 and r["pageSize"] == 5, "分页回显不符: %r/%r" % (r["page"], r["pageSize"]))
-    ok(isinstance(r["totalPages"], int), "totalPages 应为 int(清单总页数),实为 %r" % (r["totalPages"],))
     check_subset(keys_of(r["stats"], "search.stats"), {"upstreamCalls", "elapsedMs"}, "search.stats")
     ok(KS_STATS_LEGACY.isdisjoint(keys_of(r["stats"], "search.stats")),
        "stats 出现旧 HTTP 路径字段 %r" % sorted(KS_STATS_LEGACY & keys_of(r["stats"], "search.stats")))
     ok(isinstance(r["total"], int), "search.total 应为 int")
     # total 稳定性:同查询连续两次 total 必须一致(数值稳定是硬契约)
-    r2 = core.search(QUERY, product_id=93, page=1, page_size=5)
+    time.sleep(1.2)
+    r2 = core.search(QUERY, product_id=93)
     ok(r["total"] == r2["total"],
        "total 数值不稳定: 连续两次 %r vs %r" % (r["total"], r2["total"]))
     drift = abs(r["total"] - SEARCH_TOTAL_BASELINE) / float(SEARCH_TOTAL_BASELINE)
@@ -1156,17 +2052,16 @@ def t_search_contract():
     if r["total"] != SEARCH_TOTAL_BASELINE:
         print("      注: total 偏离基线 %d → %r(在 %.0f%% 容差内,已按新观测重新定档)"
               % (SEARCH_TOTAL_BASELINE, r["total"], SEARCH_TOTAL_DRIFT_TOL * 100))
-    ok(len(r["results"]) == 5, "page_size=5 应返回 5 条,实为 %d" % len(r["results"]))
+    ok(r["results"], "清单为空(该探测词实测必有结果)")
     for i, it in enumerate(r["results"]):
         name = "results[%d]" % i
         kk = keys_of(it, name)
-        # 16 字段:必含硬契约字段(views/snippet 可为 None 但键必须在——spec 逐字段冻结)。
         check_subset(kk, RESULT_KEYS, name)
         check_no_extra(kk, RESULT_KEYS, name)
         check_no_forbidden(kk, RESULT_FORBIDDEN_KEYS, name)
-        ok(it["type"] in ("knowledge", "answer", "article"),
-           "%s.type 非法: %r" % (i, it["type"]))
-        ok(it["id"], "%s.id 为空" % i)
+        ok(it["type"] in ("knowledge", "question", "article"),
+           "%s.type 非法(应为 knowledge|question|article): %r" % (name, it["type"]))
+        ok(it["id"], "%s.id 为空" % name)
         ok(it["title"], "%s.title 为空(清单核心交付物是标题)" % name)
         ok(isinstance(it["hitRoutes"], int) and it["hitRoutes"] >= 1,
            "%s.hitRoutes 应为 ≥1 的整数,实为 %r" % (name, it.get("hitRoutes")))
@@ -1176,77 +2071,64 @@ def t_search_contract():
            "%s.routes 长度(%d)应等于 hitRoutes(%d)" % (name, len(it["routes"]), it["hitRoutes"]))
         ok(all(isinstance(x, int) and x >= 1 for x in it["routes"]),
            "%s.routes 元素应为 ≥1 的整数" % name)
-        if it["type"] == "answer":
-            ok(it["questionId"], "%s 是 answer 却缺 questionId(无法定位问题帖)" % name)
-            # answer 专有原生信号:键必须存在(answer 帖必有回答数/采纳标记)。
+        # ⚠️ **帖子级硬证据**(ADR-0014):问答条目的 id 是帖子号,不是回答 id。
+        # 实测判据:详情端点按该 id 能取到帖(由 read 用例覆盖);此处先钉形态——
+        # 问答条目不得再有 questionId 字段(它已随帖级化删除)。
+        if it["type"] == "question":
+            ok("questionId" not in kk,
+               "%s 是 question 却仍带 questionId 字段(帖级化后 id 就是帖子号)" % name)
             ok("adopted" in kk and "answersCount" in kk,
-               "%s 是 answer 却缺 adopted/answersCount 原生信号" % name)
+               "%s 是 question 却缺 adopted/answersCount 原生信号" % name)
         else:
-            # 非 answer 条目没有这些字段的来源,值应为 None(键在、值为 None)。
-            ok(it["adopted"] is None and it["questionId"] is None,
-               "%s 是非 answer 条目,adopted/questionId 应为 None" % name)
+            ok(it["adopted"] is None,
+               "%s 是非问答条目,adopted 应为 None,实为 %r" % (name, it["adopted"]))
 
 
-@case("online: 清单顺序按路序 —— 首次出现的路序号单调不减(排序键第一维)", online=True)
-def t_search_manifest_order_by_route():
-    """**替换掉旧的 `t_search_manifest_order`**(旧断言 hitRoutes 单调降序)。
+@case("online: 清单内同一帖只出现一次(帖子级归并的外部证据)", online=True)
+def t_manifest_post_level_dedup():
+    """**帖子级归并的外部可观测证据**(ADR-0014)。
 
-    旧断言与本轮契约直接冲突:`hitRoutes` 已从排序主键**降级为纯信息字段**,
-    清单不再按命中路数排。保留它就是钉住一个已被用户拍板撤销的行为。
+    离线用例已用合成数据证明归并逻辑;本条证明**真实上游数据**下也成立:
+    上游按回答返回(同一帖子下多条回答 = 多个条目),清单里同一帖子号必须只出现一次。
 
-    新断言把一个**可观测的量**钉住:`min(routes)` 就是"首次出现的路序号"
-    (`routes` 是升序的路号集,首元素即该条首次被哪一路召回)。排序键第一维是它,
-    故清单里它必须单调不减。这条断言对实现的约束是实打实的:任何"按分数/命中路数
-    重排"的改动都会打乱它。
+    为什么必须联网验:合成数据的形状是照实测写的,若上游改了返回形态
+    (例如开始按帖子返回),离线用例仍全绿而本层归并会退化为恒等映射——
+    那条路径没有离线可测的信号,只能靠真实数据钉。
     """
-    r = core.search(PROBE_MULTI_ROUTE, product_id=93, page=1, page_size=30)
-    ok(len(r["queries"]) >= 3,
-       "本用例需要多路输入(实测该探针词 ≥3 路),实为 %d 路" % len(r["queries"]))
-    firsts = [min(x["routes"]) for x in r["results"]]
-    ok(firsts == sorted(firsts),
-       "清单未按「首次出现的路序号」升序(排序键第一维): %r\n"
-       "      注:排序键应为 (首次路序, 路内名次),不含 hitRoutes 长度" % (firsts,))
-    # 首条必须来自第 1 路(原句路恒为第 1 路,路序最靠前)。
-    ok(firsts and firsts[0] == 1, "清单首条应来自第 1 路,实为 %r" % (firsts[:1],))
-    # 说明:**不断言** hitRoutes 的单调形态。上游数据里"恰好逆序"可以合法出现
-    # (排序键是路序,不是命中路数;两者无需一致),拿一个统计巧合当判据会假红。
-    # "hitRoutes 不是排序主键"由离线合成用例
-    # (`排序键不含命中路数 —— 路序靠前者恒在前`)确定性证明,并已用负控验证
-    # (把旧实现 -len(hits) 塞回去 → 该用例立刻变红)。
+    r = core.search("信用额度", product_id=93, type_="question")
+    items = r["results"]
+    ok(items, "type=question 检索零结果(探测词未命中;换词而非降级断言)")
+    ids = [x["id"] for x in items]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    ok(not dupes,
+       "清单里同一帖子号出现多次 %r —— 帖级归并未生效(条目仍是回答级)" % (dupes,))
+    ok(all(x["type"] == "question" for x in items),
+       "type=question 过滤后混入其他类型: %r" % ([x["type"] for x in items],))
+    # 帖级信号必须真的带值(不是键在值全空):answersCount 是该帖的回答总数。
+    withcount = [x for x in items if isinstance(x.get("answersCount"), int)]
+    ok(withcount, "没有任何问答条目带 answersCount —— 帖级信号未透传: %r"
+       % ([x.get("answersCount") for x in items][:5],))
+    ok(any(x["answersCount"] >= 1 for x in withcount), "answersCount 应至少为 1")
 
 
-@case("online: 清单分页是清单口径 —— 每路上游固定 10 条,page_size 切清单", online=True)
-def t_search_manifest_paging():
-    # 用稳定产出多路的探针词:`信用额度控制` 去重后只剩 1 路(原句路与产品路同词),
-    # 清单天然只有 10 条,深页无意义。`BOM 分母变平方` 稳定出 6 路,清单足够深。
-    r1 = core.search(PROBE_MULTI_ROUTE, product_id=93, page=1, page_size=5)
-    ok(len(r1["results"]) <= 5, "page_size=5 应 ≤5 条,实为 %d" % len(r1["results"]))
-    ok(len(r1["queries"]) >= 2, "本用例需要多路输入(实测该探针词 ≥2 路),实为 %d 路"
-       % len(r1["queries"]))
-    r2 = core.search(PROBE_MULTI_ROUTE, product_id=93, page=2, page_size=5)
-    ids1 = [x["id"] for x in r1["results"]]
-    ids2 = [x["id"] for x in r2["results"]]
-    ok(not (set(ids1) & set(ids2)),
-       "清单第 1/2 页出现重复条目: %r" % (sorted(set(ids1) & set(ids2)),))
-
-
-@case("online: search 三种实体全返回(type 字段区分)", online=True)
+@case("online: search 三种实体全返回(type 字段区分;问答档对外名是 question)", online=True)
 def t_search_all_types():
-    seen = set()
-    # 混排页:不保证三类型齐全,只做"混排可见合法类型"的弱断言
-    r = core.search(QUERY, product_id=93, page=1, page_size=25)
+    r = core.search(QUERY, product_id=93, type_=None)
     types = [x["type"] for x in r["results"]]
-    ok(all(t in ("knowledge", "answer", "article") for t in types),
+    ok(all(t in ("knowledge", "question", "article") for t in types),
        "混排页出现非法 type: %r" % (sorted(set(types)),))
+    ok("answer" not in types,
+       "混排页出现上游原始值 'answer' —— 映射漏了(对外应为 question): %r" % (sorted(set(types)),))
     # 定向过滤:每类型各用实测能命中的探测词。
-    # 实测事实(2026-09-17):article 是长尾类型,泛词("信用额度"/"BOM"/"MRP")在该
-    # 产品过滤下抽不到 article 条目,故用 "套打" 作为 article 探测词。
+    # 实测事实(2026-09-17):article 是长尾类型,泛词("信用额度"/"BOM"/"MRP")在该产品
+    # 过滤下抽不到 article 条目,故用 "套打" 作为 article 探测词。
     # 注意 `total` 是**上游混合结果的总数,不是过滤后该类型的条数**
     # (例:type=article&text=信用额度 → total=74 但 results=[])。故此处不断言 total。
-    probes = (("knowledge", QUERY), ("answer", "信用额度"), ("article", "套打"))
+    probes = (("knowledge", QUERY), ("question", "信用额度"), ("article", "套打"))
+    seen = set()
     for t, probe in probes:
         time.sleep(1.2)
-        rr = core.search(probe, product_id=93, page=1, page_size=5, type_=t)
+        rr = core.search(probe, product_id=93, type_=t)
         ok(rr["ok"] is True, "type=%s 检索失败" % t)
         ok(rr["results"], "type=%s 检索零结果(探测词 %r 未命中;换词而非降级断言)" % (t, probe))
         ok(all(x["type"] == t for x in rr["results"]),
@@ -1254,7 +2136,7 @@ def t_search_all_types():
         ok(rr["scanNote"] and ("type=%s" % t) in rr["scanNote"],
            "type=%s 应带该类型的 scanNote(跨页扫描说明),实为 %r" % (t, rr["scanNote"]))
         seen.add(t)
-    ok(seen == {"knowledge", "answer", "article"}, "三种类型未全部验证")
+    ok(seen == {"knowledge", "question", "article"}, "三种类型未全部验证")
 
 
 @case("online: 空结果为 ok:true + total:0 + 空数组(绝非异常)", online=True)
@@ -1270,7 +2152,7 @@ def t_empty_result():
 
 @case("online: read 契约(9 键,已摘 landing;无 refresh)", online=True)
 def t_read_contract():
-    r = core.search(QUERY, product_id=93, page=1, page_size=5)
+    r = core.search(QUERY, product_id=93)
     kid = next((x["id"] for x in r["results"] if x["type"] == "knowledge"), None)
     ok(kid, "未取到 knowledge 条目 id")
     time.sleep(1.2)
@@ -1290,46 +2172,38 @@ def t_read_contract():
     check_subset(keys_of(d["stats"], "read.stats"), {"upstreamCalls", "elapsedMs"}, "read.stats")
 
 
-@case("online: read(answer) 契约 —— 键集/id 语义/截断信号", online=True)
-def t_read_answer_contract():
-    """answer 路径此前零覆盖(t_read_contract 与 t_cli_read 都只测 knowledge),
-    而它的返回形态与 knowledge 差异最大:多 answers/bestAnswer/isSolved 等,
-    且带 answersTaken/answersTotal 截断信号。基线从未描述过它,上游改字段没有
-    任何断言会发现。
+@case("online: read(question) 契约 —— 键集/帖级 id/截断信号", online=True)
+def t_read_question_contract():
+    """问答详情路径的契约(键集 + **帖级 id 语义** + 截断信号)。
 
-    同时钉住 id 语义:answer 只认 questionId(search 条目的 `id` 是回答 id,
-    拿去请求 /api/questions/{id} 必 404),故显式用 questionId 读取。
+    ⚠️ 本轮关键变化(决策 D5/D6):清单条目的 `id` **就是帖子号**,故 `read` 直接
+    用它即可 —— 旧口径"要把 questionId 交给 read、id 是回答 id"已作废,
+    双 id 空间整体消失。本用例用清单条目的 `id` **原样**去读,证明这条闭环成立。
     """
-    r = core.search(QUERY, product_id=93, page=1, page_size=10)
-    item = next((x for x in r["results"] if x["type"] == "answer"), None)
-    ok(item, "未取到 answer 条目")
-    qid = item.get("questionId")
-    ok(qid, "answer 条目缺 questionId(无法定位问题帖)")
+    r = core.search(QUERY, product_id=93, type_="question")
+    item = next((x for x in r["results"] if x["type"] == "question"), None)
+    ok(item, "未取到 question 条目")
+    qid = item["id"]  # 帖级:id 就是帖子号,不再有 questionId 字段
+    ok(qid, "question 条目 id 为空")
+    ok("questionId" not in item, "question 条目不应再有 questionId 字段(帖级化已删除)")
     time.sleep(1.2)
-    d = core.read("answer", qid)
-    ks = keys_of(d, "read(answer)")
-    # 核心键必须齐:这是 answer 路径与 knowledge 路径的形态差异所在。
-    # ⚠️ spec 第 4 节把 answer 的附加字段列成一串(questionId/isSolved/…/truncated),
-    # 但那是**可出现的键集**,不是"必须全在"的键集——实证两条(spec 说 read「不变」,
-    # 故口径应与拆分前逐字一致):
-    #   * `questionId`:**该路径从不返回**。answer 详情的 id 就是入参 questionId,
-    #     用它自己的 id 再回显一个 questionId 是同值重复;拆分前亦无此键。
-    #   * `truncated`:**条件字段**,只在发生截断时置位(_question_detail 里三处
-    #     `truncated = True`)。未截断就不该出现——正因如此它才有信号价值。
-    # 故 required = 恒在的核心键;allowed = 可出现的全集。
-    check_subset(ks, READ_KEYS | READ_ANSWER_REQUIRED_KEYS, "read(answer) 顶层")
-    check_no_extra(ks, READ_KEYS | READ_ANSWER_EXTRA_KEYS, "read(answer) 顶层")
-    ok(d["ok"] is True, "read(answer).ok 应为 True")
-    ok(d["type"] == "answer", "read(answer).type 应为 answer")
-    ok(str(d["id"]) == str(qid), "read(answer).id 应回显传入的 questionId")
-    ok("landing" not in ks, "read(answer) 仍返回 landing 字段")
-    ok("chunks" not in ks, "read(answer) 返回 chunks(spec:随 ask 删除)")
+    d = core.read("question", qid)
+    ks = keys_of(d, "read(question)")
+    # 核心键必须齐:这是问答路径与 knowledge 路径的形态差异所在。
+    # required = 恒在的核心键;allowed = 可出现的全集。
+    check_subset(ks, READ_KEYS | READ_QUESTION_REQUIRED_KEYS, "read(question) 顶层")
+    check_no_extra(ks, READ_KEYS | READ_QUESTION_EXTRA_KEYS, "read(question) 顶层")
+    ok(d["ok"] is True, "read(question).ok 应为 True")
+    ok(d["type"] == "question", "read(question).type 应为 question,实为 %r" % (d["type"],))
+    ok(str(d["id"]) == str(qid), "read(question).id 应回显传入的帖子号(清单条目 id 原样可用)")
+    ok("landing" not in ks, "read(question) 仍返回 landing 字段")
+    ok("chunks" not in ks, "read(question) 返回 chunks(spec:随 ask 删除)")
     ok("questionId" not in ks,
-       "read(answer) 返回了 questionId:该路径的 id 就是 questionId,回显同值是冗余"
-       "(拆分前亦无此键;spec 第 4 节列的是可出现键集,不是必含键集)。实有: %r" % (sorted(ks),))
+       "read(question) 返回了 questionId:该路径的 id 就是帖子号,回显同值是冗余"
+       "(且该字段已随帖级化删除)。实有: %r" % (sorted(ks),))
 
     # 截断信号:已取/总数必须都是 int,且已取 <= 总数。
-    # 此前 max_answer_pages 造成的截断走正常退出、不置 truncated,调用方零信号。
+    # max_answer_pages 造成的截断若不置 truncated,调用方零信号。
     ok(isinstance(d.get("answersTaken"), int), "answersTaken 应为 int,实为 %r" % (d.get("answersTaken"),))
     ok(isinstance(d.get("answersTotal"), int) or d.get("answersTotal") is None,
        "answersTotal 应为 int 或 None,实为 %r" % (d.get("answersTotal"),))
@@ -1340,36 +2214,39 @@ def t_read_answer_contract():
     ok(isinstance(d.get("answers"), list), "answers 应为 list")
     ok(len(d["answers"]) == taken, "answers 长度(%d)应等于 answersTaken(%d)"
        % (len(d["answers"]), taken))
-    # 逐个回答条目:硬契约字段
     for a in d["answers"]:
         aks = keys_of(a, "answer 条目")
         check_subset(aks, {"id", "adopted", "contentText"}, "answer 条目")
         ok("chunks" not in aks, "answer 条目返回 chunks(spec:随 ask 删除)")
-    check_subset(keys_of(d["stats"], "read(answer).stats"),
-                 {"upstreamCalls", "elapsedMs"}, "read(answer).stats")
+    check_subset(keys_of(d["stats"], "read(question).stats"),
+                 {"upstreamCalls", "elapsedMs"}, "read(question).stats")
 
 
-@case("online: read 的 answer 路径只认 questionId(传回答 id 应失败)", online=True)
-def t_read_answer_id_semantics():
-    """钉住 id 语义单一口径:search 条目的 `id` 是回答 id,不是问题 id。
+@case("online: read(question) 传回答级 id 已不可表达(双 id 空间消失)", online=True)
+def t_read_question_no_second_id():
+    """钉住"双 id 空间已消失"这件事:清单不再给回答 id,故无从传错。
 
-    此前 `_fetch_for_item` 有 `questionId or id` 兜底,公开的 read 路径没有,
-    同一输入两处行为相反。兜底已移除,这里守住"传回答 id 必须失败而不是静默读错帖"。
+    旧口径下这条用例的存在理由是"传回答 id 必 404,故 read 只认 questionId";
+    现在回答 id **不再出现在清单里**,调用方拿不到第二个 id 空间——问题从源头消失。
+
+    本用例的最强可执行断言:清单里每一条问答条目,其 `id` 都能被 `read("question", id)`
+    **成功**读到(即清单与读取的 id 口径闭环)。
     """
-    r = core.search(QUERY, product_id=93, page=1, page_size=10)
-    item = next((x for x in r["results"] if x["type"] == "answer"), None)
-    ok(item, "未取到 answer 条目")
-    aid, qid = item.get("id"), item.get("questionId")
-    ok(aid and qid and str(aid) != str(qid),
-       "本用例需要 id != questionId 的条目(实得 id=%r qid=%r)" % (aid, qid))
-    time.sleep(1.2)
-    try:
-        d = core.read("answer", aid)
-    except Exception:
-        return   # 上游对错误 id 报错 = 期望行为
-    # 若不报错,则必须证明它没有把回答 id 当成问题 id 读出一个"别的帖子"
-    ok(str(d.get("id")) != str(aid) or d.get("ok") is False,
-       "read(answer, 回答id) 静默成功了:read 的 id 口径已分裂")
+    r = core.search(QUERY, product_id=93, type_="question")
+    items = [x for x in r["results"] if x["type"] == "question"][:2]
+    ok(items, "未取到 question 条目")
+    for it in items:
+        ok("questionId" not in it, "清单条目仍暴露第二个 id 空间(questionId)")
+        time.sleep(1.2)
+        try:
+            d = core.read("question", it["id"])
+        except Exception as e:
+            raise Fail("清单条目的 id(%r)直接读取失败 —— 清单与读取的 id 口径未闭环: %s"
+                       % (it["id"], e))
+        ok(str(d.get("id")) == str(it["id"]),
+           "read 返回的 id(%r)与清单条目 id(%r)不一致(口径分裂)" % (d.get("id"), it["id"]))
+        ok(d.get("ok") is True, "read 未返回 ok:true: %r" % (d.get("ok"),))
+        ok("questionId" not in d, "read(question) 仍返回 questionId(双 id 空间残留)")
 
 
 @case("online: routeErrors 契约 —— 失败路被记录、其余路结果仍返回", online=True)
@@ -1393,7 +2270,7 @@ def t_route_errors_recorded():
     # 探针词必须稳定产出 ≥2 路,否则"其余路"不存在(单路时首路即全部)
     cp._search_upstream = fake
     try:
-        r = core.search(PROBE_MULTI_ROUTE, product_id=93, page=1, page_size=10)
+        r = core.search(PROBE_MULTI_ROUTE, product_id=93)
     finally:
         cp._search_upstream = real
     ok(r["ok"] is True, "单路失败不应让整轮失败")
@@ -1418,7 +2295,7 @@ def t_budget_exhausted_search():
     budget=2 只够跑完 1 路、第 2 路缺口,必然触发耗尽(旧断言用 budget=1,
     单路查询时恰好跑完、不会耗尽——那是测试假设错,不是产品缺陷)。
     """
-    r = core.search(PROBE_MULTI_ROUTE, product_id=93, budget=2, page=1, page_size=10)
+    r = core.search(PROBE_MULTI_ROUTE, product_id=93, budget=2)
     ok(len(r["queries"]) >= 3, "本用例需要 ≥3 路的输入(实测该探针词 6 路),实为 %d 路"
        % len(r["queries"]))
     ok(r["budget_exhausted"] is True, "budget=2 且 ≥3 路应置 budget_exhausted=true")
@@ -1428,7 +2305,7 @@ def t_budget_exhausted_search():
        "预算硬上限被击穿: budget=2 实际发出 %r 次请求" % (r["stats"]["upstreamCalls"],))
     ok(r["ok"] is True, "预算耗尽仍应返回 ok:true(不是异常)")
     # budget=0:零上游请求,清单必空且不崩
-    r0 = core.search(PROBE_MULTI_ROUTE, product_id=93, budget=0, page=1, page_size=10)
+    r0 = core.search(PROBE_MULTI_ROUTE, product_id=93, budget=0)
     ok(r0["ok"] is True, "budget=0 应优雅返回")
     ok(r0["results"] == [], "budget=0 不应产出清单,实为 %d 条" % len(r0["results"]))
     ok(r0["stats"]["upstreamCalls"] == 0, "budget=0 却发生了上游请求")
@@ -1443,8 +2320,8 @@ def t_product_id_zero():
     search 返回结构里**不存在**,故本用例不再断言任何产品线回显——
     这是 spec 冻结的事实,不是被弱化的断言。
     """
-    a = core.search(QUERY, product_id=0, page=1, page_size=5)
-    b = core.search(QUERY, product_id=None, page=1, page_size=5)
+    a = core.search(QUERY, product_id=0)
+    b = core.search(QUERY, product_id=None)
     ok(a["total"] == b["total"],
        "product_id=0 与省略的 total 不等价: %r vs %r" % (a["total"], b["total"]))
     # ⚠️ 断言口径(2026-09-18 实测修正):**只比集合,不比序列**。
@@ -1473,7 +2350,7 @@ def t_gold_error_code_case():
     顺序完全等于上游原生序,该文档必须仍可见。
     """
     gold = "646787188905978624"
-    r = core.search("应用为禁用状态[网关]", product_id=93, page=1, page_size=30)
+    r = core.search("应用为禁用状态[网关]", product_id=93)
     ok(r["results"], "实证用例召回为零,清单化失去意义")
     ids = [x["id"] for x in r["results"]]
     ok(gold in ids,
@@ -1486,7 +2363,7 @@ def t_gold_error_code_case():
 
 @case("online: kd search 进程级调用(退出码 0 + JSON 契约)", online=True)
 def t_cli_search():
-    code, d, err = cli("search", QUERY, "--product", "93", "--size", "5")
+    code, d, err = cli("search", QUERY, "--product", "93")
     ok(code == 0, "kd search 退出码 %r" % code)
     ok(d is not None, "kd search stdout 不是合法 JSON")
     check_subset(keys_of(d, "cli search"), SEARCH_KEYS, "cli search")
@@ -1495,7 +2372,7 @@ def t_cli_search():
 
 @case("online: kd search --kw(LLM 拆词入口)+ 清单字段 + max-routes", online=True)
 def t_cli_search_manifest():
-    code, d, _ = cli("search", "应用为禁用状态[网关]", "--product", "93", "--size", "30")
+    code, d, _ = cli("search", "应用为禁用状态[网关]", "--product", "93")
     ok(code == 0, "kd search 退出码 %r" % code)
     ok(d is not None, "kd search stdout 不是合法 JSON")
     check_subset(keys_of(d, "cli search"), SEARCH_KEYS, "cli search")
@@ -1504,14 +2381,14 @@ def t_cli_search_manifest():
        "CLI 清单条目不得含 contentText")
     # --max-routes 1:退化为单路,路数必为 1
     time.sleep(1.2)
-    code, d1, _ = cli("search", QUERY, "--product", "93", "--max-routes", "1", "--size", "5")
+    code, d1, _ = cli("search", QUERY, "--product", "93", "--max-routes", "1")
     ok(code == 0, "kd search --max-routes 1 退出码 %r" % code)
     ok(len(d1["queries"]) == 1, "--max-routes 1 应只跑 1 路,实为 %d 路" % len(d1["queries"]))
     ok(d1["stats"]["upstreamCalls"] == 1,
        "--max-routes 1 且无 type_ 过滤应恰好 1 次上游请求,实为 %r" % (d1["stats"]["upstreamCalls"],))
     # --kw 只给关键词(无 text:nargs="?" 允许)—— LLM 拆词的 CLI 入口。
     time.sleep(1.2)
-    code, d2, _ = cli("search", "--kw", "信用额度", "--kw", "应收单 信用", "--product", "93", "--size", "5")
+    code, d2, _ = cli("search", "--kw", "信用额度", "--kw", "应收单 信用", "--product", "93")
     ok(code == 0, "kd search --kw 退出码 %r" % code)
     ok(d2 is not None, "kd search --kw stdout 不是合法 JSON")
     ok(d2["text"] is None, "只给 --kw 时 text 应为 None,实为 %r" % (d2["text"],))
@@ -1522,7 +2399,7 @@ def t_cli_search_manifest():
 
 @case("online: kd read 进程级调用", online=True)
 def t_cli_read():
-    code, d, _ = cli("search", QUERY, "--product", "93", "--size", "5")
+    code, d, _ = cli("search", QUERY, "--product", "93")
     assert d is not None
     kid = next((x["id"] for x in d["results"] if x["type"] == "knowledge"), None)
     ok(kid, "CLI search 未取到 knowledge id")

@@ -3,8 +3,13 @@
 
 三个 kind 的取数与展开逻辑各自独立,但**分发点只应有一处**(`_detail`),
 调用方(read)无需知道分发表存在。
+
+⚠️ 问答这一档的对外 kind 是 **`question`**(决策 D5,2026-09-27),不是上游协议里的
+`answer`。上游 `/api/questions/{帖子号}` 按**帖子**返回(问题正文 + 采纳答案 +
+全部回答列表),故 kind 名与"帖子级"这一事实对齐;上游原始值 `answer` 只在
+`_upstream._norm_item` 一处被翻译,本模块不出现它。
 """
-from ._config import VIP, _BudgetExhausted, log
+from ._config import VIP, _BudgetExhausted, apply_link_policy, log
 from ._errors import UpstreamError
 from ._net import _get_json
 from ._text import _is_true, html2text
@@ -14,7 +19,7 @@ def _knowledge_article(kid, budget=None, rate=None):
     d = _get_json(VIP + "/knowledgeapi/knowledge/" + str(kid), budget, rate)
     return {"ok": True, "id": str(kid), "type": "knowledge", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": _URL_OF["knowledge"] % kid,
+            "url": apply_link_policy("knowledge", _URL_OF["knowledge"] % kid),
             "products": [p.get("name") for p in (d.get("products") or [])][:3],
             "updatedAt": d.get("updatedAt")}
 
@@ -48,12 +53,16 @@ def _question_detail(qid, with_answers=True, max_answer_pages=3, max_detail=5, b
                      rate=None):
     """问答帖全文:问题正文 + 最佳答案 + 回答列表(可展开详情)。
 
-    ⚠️ 只认 questionId:上游 `/api/questions/{id}` 传回答 id 必 404。
+    入参 `qid` 是**帖子号**——上游 `/api/questions/{id}` 只认帖子号。
+
+    ⚠️ `type` 回填的是对外 kind `question`(决策 D5);上游协议里的 `answer` 不在
+    这里的对外字段中出现。清单条目的 `id` 就是帖子号,故 `read(type="question", id)`
+    直接可读,不存在"该传哪个 id"的问题(双 id 空间已随 D6 消失)。
     """
     d = _get_json(VIP + "/api/questions/" + str(qid), budget, rate)
-    out = {"ok": True, "id": str(qid), "type": "answer", "title": d.get("title"),
+    out = {"ok": True, "id": str(qid), "type": "question", "title": d.get("title"),
            "contentText": html2text(d.get("description")),
-           "url": _URL_OF["answer"] % qid,
+           "url": apply_link_policy("question", _URL_OF["question"] % qid),
            "isSolved": d.get("isSolved"), "answersCount": d.get("answers"),
            "views": d.get("views"), "rewardCoins": d.get("rewardCoins"),
            "products": _q_products(d),
@@ -113,7 +122,7 @@ def _article_detail(aid, budget=None, rate=None):
     classes = [c.get("name") for c in (d.get("classifies") or []) if c.get("name")]
     return {"ok": True, "id": str(aid), "type": "article", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": _URL_OF["article"] % aid,
+            "url": apply_link_policy("article", _URL_OF["article"] % aid),
             "products": classes[:3], "supports": d.get("supports"), "views": d.get("views"),
             "updatedAt": d.get("updatedAt")}
 
@@ -128,29 +137,6 @@ def _detail(kind, oid, budget=None, rate=None):
     return _DETAIL_FN[kind](oid, budget=budget, rate=rate)
 
 
-def _fetch_for_item(item, budget=None, rate=None):
-    """按条目取详情(供内部编排使用)。单条失败不抛,降级为 {"ok": False}。
-
-    answer 只认问题 id(questionId):清单条目的 `id` 是回答 id,拿去请求
-    /api/questions/{id} 必 404。此前的 `or item["id"]` 兜底会把"传错 id"
-    伪装成一次真实请求,故移除——口径单一,传错即快速失败。
-    """
-    try:
-        if item["type"] == "knowledge":
-            d = _detail("knowledge", item["id"], budget=budget, rate=rate)
-        elif item["type"] == "answer":
-            d = _detail("answer", item["questionId"], budget=budget, rate=rate)
-        elif item["type"] == "article":
-            d = _detail("article", item["id"], budget=budget, rate=rate)
-        else:
-            d = None
-    except _BudgetExhausted:
-        d = {"ok": False, "error": "budget_exhausted"}
-    except Exception as e:
-        d = {"ok": False, "error": str(e)[:150]}
-    return d
-
-
-_DETAIL_FN = {"knowledge": _knowledge_article, "answer": _question_detail,
+_DETAIL_FN = {"knowledge": _knowledge_article, "question": _question_detail,
               "article": _article_detail}
 _DETAIL_KINDS = tuple(_DETAIL_FN)

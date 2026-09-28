@@ -4,10 +4,10 @@
 零账号/零 cookie/零点数/零外部依赖。
 
 公开面(仅此两个高阶函数 + 三个异常类):
-  search(text=None, keywords=None, product_id=93, page=1, page_size=10,
+  search(text=None, keywords=None, product_id=None,
          global_=False, sorts_type=1, type_=None, max_routes=None, budget=None,
          rate=None) -> dict
-                      唯一检索入口:多路拆词检索,**只出标题清单**(不返回正文)
+                      唯一检索入口:多路拆词检索,**只出帖级标题清单**(不返回正文)
   read(kind, oid, budget=None, rate=None) -> dict
                       按类型读全文
   QueryTooLong / UpstreamError / InternalError            可分类的调用错误
@@ -19,6 +19,10 @@
 内核**不替调用方决定读哪篇**,也不产生任何排序评分——每一路都是上游综合排序的产物,
 本内核只做去重(2026-09-18 定案,见 ADR-0013)。
 
+**清单粒度 = 帖子**(2026-09-27,ADR-0014):同一帖的多条回答在上游是多个条目,
+清单里**合并为一条**;条目的 `id` 就是帖子号,`read` 直接用它。问答档的对外类型名是
+`question`(上游协议里叫 `answer`,映射只在实现体内的 `_norm_item` 一处)。
+
 **内部件的封闭方式(工单 #26——前导下划线不足)**:
 实现体(全部内部函数、常量、类、以及被 import 进来的 json/re/urllib 等名字)
 放在私有实现包里(`kd._impl`,按职责拆成若干子模块)。之所以必须不在本文件:模块级
@@ -29,7 +33,9 @@
     kd.core.RRF_K      -> AttributeError
     kd.core.json       -> AttributeError
 这不是"前导下划线"式的君子协定,而是命名空间级隔离;后续重构内部件不再构成
-对外破坏性变更。校验见 `scripts/check_core_surface.py`。
+对外破坏性变更。校验见 `tests/kd_regression.py` 的离线组(原
+`scripts/check_core_surface.py` 已于 2026-09-27 整体删除,其中三条真防静默失效的
+判据并入离线回归)。
 
 **内部件仍需可读时**:`kd.core._impl()` 返回承载实现的包对象(显式内部观测口),
 仅用于测试与自检;它带前导下划线、不在 `__all__` 内,不参与公开契约。

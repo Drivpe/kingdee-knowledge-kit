@@ -1,0 +1,53 @@
+{
+  "version": "v6.5",
+  "note": "kd 对外返回体的**单一来源**(决策 D13,2026-09-27)。这里只写一次字段集与编号表;代码读它拼返回体,测试从它派生断言,文档指向它而不是各写一份。**不写生成脚本、不加守卫、不动 CI** —— 它治的是'抄六遍'的病:不改就没痛,只在改动那一刻出事,而那一刻没有任何信号(活证据:SKILL.md:245 与 ANSWER-SPEC:23 的链接口径正面对撞;d753719 删 3 个字段后测试计数没跟上)。与守卫(事后抓、要维护、会误报)的区别是它**事前只有一处**。读取失败一律回落空表,不炸(与 query_routes.json 同纪律)。",
+
+  "search": {
+    "note": "kd search 清单返回体的键集。results[] 是**帖子级**条目(ADR-0014):同一帖的多条回答在上游是多个条目,清单里合并为一条,回答数走 answersCount 原生信号。",
+    "resultKeys": ["type", "id", "title", "url", "hitRoutes", "routes", "snippet",
+                   "products", "adopted", "answersCount", "comments", "supports",
+                   "questionBody"],
+    "resultForbiddenKeys": ["contentText", "fusedScore", "chunks", "contentLen",
+                            "useful", "views", "updatedAt", "questionId"],
+    "topKeys": ["ok", "text", "keywords", "total", "queries", "routesPlanned",
+                "routesDegraded", "effectiveProductId", "results", "routeErrors",
+                "budget_exhausted", "scanNote", "stats"]
+  },
+
+  "productIds": {
+    "note": "产品线编号表(调用方显式传 --product N 用)。**只是编号表,不是推导表**:内核不做任何字面产品线推导(决策 D14 删掉整个字面猜),产品线由调用层(LLM)判定后显式传入。不传即 93。",
+    "default": 93,
+    "names": { "93": "星空旗舰版", "87": "苍穹", "1": "星空企业版/标准版",
+               "2": "星空侧二开问答专区", "0": "不过滤(显式指定才生效)" },
+    "evidence": {
+      "note": "编号的**实测依据**。查这个表是为了回答'凭什么说 2 是存在的一条线'——不要靠猜。",
+      "2": "2026-09-28 复测:「插件开发」下 --product 2 返回 10/10 全 question,87 同词返回 14 条里仅 2 条是问答;「账表开发」下 2 返回 9/9 全 question,87 首条是 knowledge。**可执行判据是'返回条目类型恒为问答帖'**,不是某条 total 数值(total 随语料漂移,早期记录的 611 是未带 --type 过滤时的口径)。详见 SKILL.md 的「产品线语义识别」②。",
+      "87": "苍穹侧开发/配置类语料,knowledge+article+question 混排;类目为 `金蝶AI苍穹`。",
+      "1": "星空企业版/标准版。2026-09-06 串线事故(ENG_BOM/T_ENG_BOM 被当作旗舰版输出)的另一侧语料。",
+      "93": "默认。不带过滤时召回质量在中文语料上显著更差(实测同 query 不带过滤 GlobalEase 相关文档零命中)。"
+    }
+  },
+
+  "linkPolicy": {
+    "status": "settled",
+    "settledAt": "2026-09-28",
+    "rule": {
+      "knowledge": "link",
+      "article": "link",
+      "question": "no-link"
+    },
+    "note": "链接可点性专项(D1,2026-09-28 定案)。**这是唯一真源**,文档指向它。",
+    "evidenceDoc": "docs/research/2026-09-28-链接可点性复测.md(本轮匿名复测);docs/research/2026-09-27-链接可点性与productLineId实测.md(部分结论已被本轮推翻,保留作反例档案)",
+    "evidence": {
+      "knowledge": "匿名复测 14/14 首跳 200、最终 URL 原地不变。含 09-27 文档误记为'稳定 302'的 knowledge/873372977646105600(实测 200)。",
+      "article": "匿名复测 12/12 可点。⚠️ 其中 article/248777993676668672 首跳 302,但**最终 URL 是 /knowledge/248777993710223104 且该页可点**——它是被**迁移**成了知识文档,不是失效。只看首跳状态码会把它误判为失效(09-18、09-27 两份文档都这样误判过)。补测接口侧:旧 id 的接口返回空壳(title=None、正文 0 字),迁移后 id 的接口返回完整正文(2187 字)——即网页侧活着、接口侧只服务新 id。",
+      "question": "匿名复测 9/9 → 302 → /error/404,最终 URL 恒为 /error/404。用户登录态验证 1 条亦不可点。**两条证据方向一致,证据充分。**"
+    },
+    "falseNegatives": "⚠️ **判定可点性必须跟随重定向看最终 URL(`url_effective`),不得只看首跳状态码**:(a) `question/` 的最终状态码恰为 200(成功重定向到 404 页),只看状态码会把失效链接判成可点;(b) `article/` 存在 302 但**迁移成功**的样本,只看状态码会把可点链接判成失效。**两个方向的误判都已实际发生过。**",
+    "loginState": "登录态是可点性的一个变量,但**范围未知**:用户登录态下实测 6 条(5 可点 / 1 不可点),其中 2 条匿名侧为 302、登录侧可点。⚠️ 样本仅 6 条,**不足以断言'登录态下全部可点'**。故本政策对 knowledge/article **不做可点性预判、不发探测请求**——匿名判定会对登录态用户产生假阴性。",
+    "forbidden": [
+      "不要用条目字段(`viewAuthority`/`knowledgeStatus`/`lastApprovalTime`/`auditAt`/`classifies`)预判可点性——全部实测证伪,这条路已走过三次。",
+      "不要把 `question/` 改写成 `questions/`(复数)——实测该路径同样不存在(15/15 全 302,站点自身 /questions 列表页亦 302)。"
+    ]
+  }
+}
