@@ -4,11 +4,10 @@
 零账号/零 cookie/零点数/零外部依赖。
 
 公开面(仅此两个高阶函数 + 三个异常类):
-  search(text=None, keywords=None, product_id=None,
-         global_=False, sorts_type=1, type_=None, max_routes=None, budget=None,
-         rate=None) -> dict
-                      唯一检索入口:多路拆词检索,**只出帖级标题清单**(不返回正文)
-  read(kind, oid, budget=None, rate=None) -> dict
+  search(keywords=None, product_id=<声明默认>, global_=False, sorts_type=1, rate=None,
+         include_other=False) -> dict
+                      唯一检索入口:多路关键词检索,**只出帖级标题清单**(不返回正文)
+  read(kind, oid, rate=None) -> dict
                       按类型读全文
   QueryTooLong / UpstreamError / InternalError            可分类的调用错误
 
@@ -22,6 +21,16 @@
 **清单粒度 = 帖子**(2026-09-27,ADR-0014):同一帖的多条回答在上游是多个条目,
 清单里**合并为一条**;条目的 `id` 就是帖子号,`read` 直接用它。问答档的对外类型名是
 `question`(上游协议里叫 `answer`,映射只在实现体内的 `_norm_item` 一处)。
+
+⚠️ **内核不生成任何检索词**(ADR-0016,2026-09-28,v6.6 破坏性变更):
+`search` 的 `keywords` 是唯一输入,内核把收到的词**原样、按原顺序**发往上游。
+拆词(以及"哪个词更该排前面")需要语义,规则做不到——三处实测负结果在案
+(拉丁词前置把金标从第 2 挤到第 12;泛词拆分掉出前 30;双截断实现并存)。
+拆词是**调用层**的职责,规范见 SKILL.md。`queries[]` 与调用方给的词逐字、逐序相同。
+随之删除的还有:位置参数、`--type`、`--max-routes`、`--budget`(预算机制整套)、
+`--chunk`,以及原句路(ADR-0009 整体废止)。**清单字段集按类型分份**(决策 6 + 2026-09-29
+新增 `other` 档):
+类型不适用的键**直接不出现**,而不是填 `null`。
 
 **内部件的封闭方式(工单 #26——前导下划线不足)**:
 实现体(全部内部函数、常量、类、以及被 import 进来的 json/re/urllib 等名字)
@@ -49,6 +58,7 @@
 上游纪律:匿名链路,交互短突发 2-3 请求/秒 + 抖动(默认档)。
 上游 text 有 100 原始字符硬闸——超限返回 HTTP 200 + errorCode:409 空壳,
 实现体用 clamp_query() 压回并在压回时 raise QueryTooLong(不静默截断成"无匹配")。
+每路**恒 1 次请求**(跨页扫描已删除):7 个词 = 7 次请求 = 3.33 秒。
 """
 # 公开面:`kd.core` 顶层**只允许**出现这 5 个名字(工单 #26 验收标准)。
 __all__ = ["search", "read", "QueryTooLong", "UpstreamError", "InternalError"]

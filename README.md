@@ -16,7 +16,10 @@
 ## ⚠️ 使用前必读
 
 - 上游是金蝶云社区**非官方逆向接口**:无鉴权承诺,官方升级可能导致失效;
-- **保持人类调用频率**,勿高频轰炸;全链路零账号/零 cookie/零点数是红线;
+- **保持人类调用频率**,勿高频轰炸;全链路零账号/零 cookie/零点数是红线。
+  **频率上限的唯一真源是 `src/kd/contract.json` 的 `limits.rate`**(当前 `burst 7 / rps 5` + 抖动,
+  即一次操作内最多 7 个请求同时在飞、长期速率 5 请求/秒)。内核由 `_RateLimiter` 强制执行,
+  调用方无需自行节流;**勿绕过内核直连上游**;
 - 本仓库不含任何凭据;完整安全声明见[文末](#安全)。仅供个人学习使用。
 
 ## 为什么选 kd?
@@ -26,18 +29,28 @@
 - **覆盖面完整** —— 官方文档、社区问答帖(含采纳回答与追问链)、社区文章,三种来源一次打通
 - **不被模型绑死** —— 套件不持有任何模型通道,零模型依赖;清单与全文交给调用方 agent,用哪个模型、要不要开子代理,你自己定
 - **排序交给上游** —— 每一路检索拿回的都是金蝶云社区官方综合排序的结果,内核**只去重、不做任何算法评分**(没有 RRF、没有融合分、没有 hitRoutes 加权);清单顺序本身就是相关度顺序,读哪几篇由 LLM 判断
-- **回答有规范** —— [ANSWER-SPEC](docs/ANSWER-SPEC.md) 对齐官方 AI 样例:原因分析→分步方案→操作边界、表格、`knowledge`/`article` 引用做成可点击链接(`question` 只给标题与出处)、资料未覆盖诚实声明;不达标时如实说明,不硬凑
+- **回答有规范** —— [ANSWER-SPEC](docs/ANSWER-SPEC.md) 对齐官方 AI 样例:原因分析→分步方案→操作边界、表格、`knowledge`/`article`/`question` 引用做成可点击链接(问答用长形式 `/questions/<帖子号>/answers/<回答号>`,2026-09-29 改判)、资料未覆盖诚实声明;不达标时如实说明,不硬凑
 - **零依赖部署** —— 内核与 CLI 均为 Python 纯标准库,无第三方依赖,`pipx install` 一条命令即可(无 Python 环境时用一键脚本兜底)
 
 ## 功能
 
 | 域 | 能力 |
 |---|---|
-| 🔍 检索 | 三种实体(官方文档/社区问答/社区文章)一次全返回,按产品线(旗舰版/苍穹/企业版/星空二开)路由,由调用层判定并显式传入;多路拆词 ≤7 路,每路各发一次上游检索后**只去重**,顺序 = (路序, 路内上游名次) |
+| 🔍 检索 | 三类已知实体(官方文档/社区问答/社区文章)一次全返回(罕见类型归入 `other` 档、默认隐藏),按产品线(旗舰版/苍穹/企业版/星空二开)路由,由调用层判定并显式传入;多路关键词 ≤7 路(超限按你给词的顺序取前 N 并**写明丢了几条**),每路各发一次上游检索后**只去重**,顺序 = (你给词的顺序, 词内上游名次) |
 | 📖 全文 | 知识库文档全文、问答帖全文(问题+全部回答+追问链,采纳优先)、社区文章全文 |
-| 📋 清单 | `kd search`(**唯一检索入口**):稀有数字 token 路 + 原句路 + 症状词路 + 字段/实体名词路 + 产品词路,只出**帖级**标题清单(带 `hitRoutes`/`routes[]` 供你判断),正文由 `kd read` 按需取 |
+| 📋 清单 | `kd search`(**唯一检索入口**):你按拆词规范拆好的关键词,每个 `--kw` 一路,**内核原样按序发送**;只出**帖级**标题清单(带 `hitRoutes`/`routes[]` 供你判断),正文由 `kd read` 按需取 |
 
-> **v6.5 全面修复**(2026-09-28,ADR-0015)——链接口径按 kind 分档: **`knowledge`/`article` 引用给链接、`question` 只给标题与出处**;内核新增**稀有数字 token 路**(错误码/单号自动抢占第 1 路,默认路径不再劣于手工拆词);`read` 的 `budget` 参数与 `search` 统一;字段集的回归检查由"自己比自己"改为**冻结基线 + 真实输出 + 注入自检**;`docs/adr/0015-挑选判据归属.md` 钉死「按标题挑」的边界(判据进文档、内核零感知)。
+> **v6.6 检索词生成权移交**(2026-09-28,ADR-0016,**破坏性变更**)——内核**不再生成任何检索词**:
+> 规则拆词器(稀有 token 路 / 原句路 / 症状词路 / 字段实体名词路 / 产品词路)整体删除,
+> `query_routes.json` 文件删除(路数上限与限速档并入 `contract.json` 的 `limits` 段);
+> **位置参数与 `--type`/`--max-routes`/`--budget`/`--chunk` 全部删除**,`--kw` 成为唯一入口;
+> **预算机制与跨页扫描删除**(每路恒 1 次请求);`--product` 三态收两态(`None` 与不传同义,
+> 不过滤只由显式 `0` 表达);清单**字段集按类型分三份**(类型不适用的键**不出现**,而非填 `null`);
+> `read(question)` 的截断由布尔改为**原因枚举**(`answer_limit` / `upstream_error`);
+> 新增顶层 `keywordsDropped`(超限丢了几条词)。
+> ⚠️ **迁移**:`kd search "整句"` → `kd search --kw "词1" --kw "词2"`(拆词规范见 `SKILL.md`);
+> `--max-routes 1` → 只给一个 `--kw`;`--product 0` 仍是"不过滤",`product_id=None` 改传 `0`。
+> **v6.5 全面修复**(2026-09-28,ADR-0015)——链接口径按 kind 分档: **`knowledge`/`article` 引用给链接、`question` 当时判为不给**;内核新增**稀有数字 token 路**(错误码/单号自动抢占第 1 路,默认路径不再劣于手工拆词);`read` 的 `budget` 参数与 `search` 统一;字段集的回归检查由"自己比自己"改为**冻结基线 + 真实输出 + 注入自检**;`docs/adr/0015-挑选判据归属.md` 钉死「按标题挑」的边界(判据进文档、内核零感知)。
 > **v6.4 契约重构**(2026-09-27,ADR-0014)——清单粒度由**回答级改为帖子级**:
 > 同一帖的多条回答在上游是多个条目,清单里**合并为一条**,条目 `id` 就是**帖子号**
 > (`questionId` 字段整体删除,双 id 空间消失);对外问答类型名由 `answer` 改为
@@ -109,8 +122,8 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 
 | 命令 | 作用 |
 |---|---|
-| `kd search "关键词" [--kw 词]… [--product 87] [--type question] [--max-routes 7] [--global]` | 检索:**只出帖级标题清单**(官方文档/社区问答/文章三种实体),按 (路序, 路内上游名次) 排列 |
-| `kd read <id> [--kind knowledge\|question\|article]` | 读全文:`--kind` 照抄 search 结果的 `type`,零翻译 |
+| `kd search --kw 词 [--kw 词]… [--product 87] [--global] [--include-other]` | 检索:**只出帖级标题清单**(官方文档/社区问答/文章三类实体;罕见类型归入 `other` 档且**默认隐藏**),按 (你给词的顺序, 词内上游名次) 排列 |
+| `kd read <id> [--kind knowledge\|question\|article]` | 读全文:`--kind` 照抄 search 结果的 `type`,零翻译(注:`other` 档是合法 type 但**没有全文端点**,`read` 会明确说明) |
 | `kd health` | 内核自检(库模式:无服务、无端口、无 HTTP) |
 
 `--product` 语义:93=星空旗舰版(默认)、87=苍穹、1=星空企业版/标准版、2=星空侧二开问答专区、0=不过滤(显式指定才生效)。
@@ -119,7 +132,7 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 (内核**不做任何字面推导**;只有你不传时,才落到默认 93)。判定口径见
 [SKILL.md](skills/kingdee-knowledge/skills/kingdee-knowledge/SKILL.md) 的「产品线语义识别」节。
 
-`--kw` 是**给 LLM 用的拆词入口**:可重复,每个词一路,**替代内核自动拆解**(原句路仍会发);只给 `--kw` 时不必再给 text。
+`--kw` 是**唯一入口**(v6.6 起位置参数已删):可重复,每个词一路。内核**不拆词、不改序、不扩充**——怎么拆由你按 `SKILL.md` 的拆词规范决定,给词的顺序就是召回顺序。
 
 > **没有 `kd ask`。** 单入口定案(ADR-0013):`ask` 及其专属件已整体删除,调用 `kd ask` 会得到 argparse 退出码 2。
 > **排序不是内核算的**:每一路都是上游综合排序的产物,内核只去重;`hitRoutes`/`routes[]` 是纯信息字段,不参与排序。
@@ -133,27 +146,33 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 - 错误是 JSON `{"code","message","hint","example"}`,`hint` 给修复指引(含可执行下一步)
 - 退出码:`0` 成功 / `1` 上游或内部错误 / `2` 用法错误
 - 永不交互;两级 `--help` 带示例;大输出标 `truncated` 并指路下一步
-- agent 自发现:`kd --help` 带三条子命令与示例;`kd health` 回吐内核版本、公开面、路由规则路径与预算上限
+- agent 自发现:`kd --help` 带三条子命令与示例;`kd health` 回吐内核版本、公开面、契约声明路径与收词上限
 
 ### `search` 返回字段
 
 | 字段 | 说明 |
 |---|---|
-| `text` / `keywords` | 回显;仅给 `--kw` 时 `text` 为 `null` |
+| `keywords` | 回显你给的词列表(v6.6 起顶层**不再有 `text`**) |
 | `total` | 各路 `totalElements` 的最大值 |
 | `queries[]` | 去重后**实际**发出的检索词,顺序即路序 |
-| `routesPlanned` | 计划路数(去重前,受 `--max-routes` 截断后) |
-| `routesDegraded` | **路数塌缩**:去重后实际路数 < 计划路数时 `true` |
+| `routesPlanned` | 计划路数(去重前,受声明的收词上限截断后) |
 | `effectiveProductId` | 本次**实际生效**的产品过滤(整数,与 `--product` 同值域;不传即默认 93)。内核不做字面推导,故它**恒等于你传入的值** |
-| `results[]` | **帖级**清单条目:`type`/`id`/`title`/`url`/`hitRoutes`/`routes[]`/`snippet`/`products`/`adopted`/`answersCount`/`comments`/`supports`/`questionBody` |
+| `results[]` | **帖级**清单条目,**字段集按 `type` 分四份**:公共 `type`/`id`/`title`/`url`/`snippet`/`products`/`comments`/`hitRoutes`/`routes[]`;`question` 另加 `adopted`/`answersCount`/`questionBody`;`article` 另加 `supports`;`other` 另加 `upstreamType`/`resourceType`(罕见类型默认隐藏,见 `otherSkipped` 与 `--include-other`)。类型不适用的键**直接不出现**(不是 `null`) |
 | `routeErrors[]` | 失败路(`{route,kind,terms,error,code,message}`)——用于区分"被上游拒绝"与"官方没这类文档" |
-| `budget_exhausted` | 上游请求硬上限耗尽,清单不完整 |
-| `scanNote` | 人读诊断串(含"路数塌缩:N→M 路") |
+| `keywordsDropped` | 因超出收词上限而未发出的词数(0 = 没丢);>0 即召回按定义不完整 |
+| `otherSkipped` | 被**隐藏**掉的罕见类型条数(`other` 档默认隐藏;0 = 没跳过或已用 `--include-other` 打开)。⚠️ 隐藏**必须可见**——它让"total 大而 results 小"的差额永远有解释 |
+| `scanNote` | 人读诊断串(含罕见类型跳过数、超限丢词与"丢弃空白词 N 条"说明) |
+| `contractCfgLoaded` | 包内 `contract.json` **是否真的读到**。`false` ⇒ 链接政策已回落"全部不给链接",**所有 `url` 是 `null`**——那是"没读到声明",不是"官方这些条目没链接" |
 | `stats` | `{upstreamCalls, elapsedMs}` |
 
 `results[]` 里**没有** `contentText`——要全文必须 `kd read`。也**没有任何 score 字段**,
 没有 `page`/`pageSize`/`totalPages`(清单分页已于 v6.4 删除),没有 `questionId`
-(帖级化后条目 `id` 就是帖子号)。
+(帖级化后条目 `id` 就是帖子号),顶层没有 `text` 与 `budget_exhausted`(v6.6 删除)、
+没有 `routesDegraded`(2026-09-29 删除:它报得自相矛盾,用户口径为"重复的不提示")。
+
+⚠️ **类型不适用的键不出现 ≠ 值为 `null`**(v6.6):前者是"结构性不适用"(知识文档永远
+没有回答数),后者是"上游没给值"。混成一个会让调用方分不清,故 `adopted` 只出现在
+`question` 条目上、`supports` 只出现在 `article` 条目上。
 
 字段集的**单一来源**是包内 `src/kd/contract.json`:代码读它拼返回体,回归用例从它派生断言。
 改字段只改这一处,不用同步六份抄本。
@@ -162,7 +181,7 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `KSEARCH_SEARCH_BUDGET` | 取包内 `kd/query_routes.json`(默认 24) | 单次 `search` 上游请求硬上限 |
+| ~~`KSEARCH_SEARCH_BUDGET`~~ | **已删除**(v6.6):每路恒 1 次请求,预算机制整体移除 | —— |
 
 > `KSEARCH_ASK_BUDGET` 已随 `ask` 删除(ADR-0013)。
 > `KAI_BASE` / `KAI_MODEL` 已废除(ADR-0008)——本套件不再持有模型通道。
@@ -180,14 +199,14 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 | `partial` | 有相关材料,但未覆盖用户问的那个点 |
 | `uncovered` | 清单与问题不匹配,或检索本身未命中 |
 
-判定依据全部来自 `search` 清单的客观信号:`routeErrors[]`(部分路失败)、`budget_exhausted`(预算耗尽)、
-`routesDegraded`(路数塌缩)、以及标题与问句的匹配度。**不用数值分数**——LLM 自报概率无校准,
+判定依据全部来自 `search` 清单的客观信号:`routeErrors[]`(部分路失败)、`keywordsDropped`(有词被超限截掉)、
+以及标题与问句的匹配度。**不用数值分数**——LLM 自报概率无校准,
 且与上游信号不同量纲,反而污染判断。
 
 ### 回答规范
 
 所有合成回答遵循 [docs/ANSWER-SPEC.md](docs/ANSWER-SPEC.md):
-三段式结构(原因分析→解决方案→操作边界)、表格、**`knowledge`/`article` 引用贴可点击链接**(`[标题](<原始 url>)`)、**`question` 只给标题与出处**(匿名 9/9 不可点,详见 [contract.json](src/kd/contract.json) 的 `linkPolicy` —— 链接政策的唯一真源)、无自用编号、不要求文末独立的来源列表、资料未覆盖诚实声明。
+三段式结构(原因分析→解决方案→操作边界)、表格、**`knowledge`/`article` 引用贴可点击链接**(`[标题](<原始 url>)`)、**`question` 给带回答号的长形式链接**(2026-09-29 改判:短形式恒不可点,长形式实测 22/22 可点;详见 [contract.json](src/kd/contract.json) 的 `linkPolicy` —— 链接政策的唯一真源)、无自用编号、不要求文末独立的来源列表、资料未覆盖诚实声明。
 
 ### 回归
 
@@ -200,7 +219,7 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 ## 安全
 
 - **本仓库不含任何凭据**。cookie、账号 token、API key、日志、含本机路径的笔记一律不入库,`.gitignore` 已按模式拦截——推送前 `git status` 再核对一遍
-- 上游为金蝶云社区**非官方逆向接口**:无鉴权承诺,官方升级可能导致失效;保持人类调用频率,勿高频轰炸
+- 上游为金蝶云社区**非官方逆向接口**:无鉴权承诺,官方升级可能导致失效;保持人类调用频率,勿高频轰炸(频率上限与唯一真源见上文「使用前必读」,由内核 `_RateLimiter` 强制)
 - 本套件不含任何模型密钥——它不调模型(ADR-0008)
 - 公开仓库等于公开接口细节,建议私有库,或接受"仅供个人学习使用"的公开声明
 

@@ -43,12 +43,11 @@ if (-not $DryRun) {
     $libDst = Join-Path $InstallRoot "lib\kd"
     if (Test-Path $libDst) { Remove-Item $libDst -Recurse -Force }
     Copy-Item (Join-Path $Repo "src\kd") (Join-Path $InstallRoot "lib\") -Recurse -Force
-    # 包内数据文件:拆解规则/预算/限速档(query_routes.json)+ 对外契约声明(contract.json)。
-    # 缺任一个,内核会静默退回内置默认值——装出来的行为与开发中的不是同一个东西
-    # (历史上漏拷过 query_routes.json 与 kd.py)。
-    # ⚠️ 2026-09-28 修:此前注释说"检查两个数据文件",代码只查了 query_routes.json。
-    # contract.json 缺失时 health 冒烟不受影响(其键只有测试用),故必须在此显式校验。
-    foreach ($f in @("query_routes.json", "contract.json")) {
+    # 包内数据文件:对外契约声明(contract.json)。**v6.6 起它是唯一一个数据文件**
+    # ——原 query_routes.json(拆解规则/预算/限速档)随拆词器与预算机制一并删除,
+    # 其仍有效的两个值(路数上限、限速档)并入 contract.json 的 limits 段(ADR-0016)。
+    # 缺它则内核静默退回内置兜底键集与默认值——装出来的行为与开发中的不是同一个东西。
+    foreach ($f in @("contract.json")) {
         if (-not (Test-Path (Join-Path $libDst $f))) {
             Write-Host "[install] ✗ 缺 lib\kd\$f" -ForegroundColor Red; exit 1
         }
@@ -221,8 +220,8 @@ Write-Host "  kd health"
 Write-Host ""
 Write-Host "完成!试一试:" -ForegroundColor Green
 Write-Host "  kd health                                # 内核自检(库模式:无服务、无端口)"
-Write-Host "  kd search ""信用额度控制"" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
-Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 自己拆好词传进去(替代自动拆解,原句路仍会发)"
+Write-Host "  kd search --kw ""信用额度控制"" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
+Write-Host "  kd search --kw ""信用额度"" --kw ""应收单 信用""   # 拆好词按序传入:每个 --kw 一路,内核不再自行拆词"
 Write-Host "  kd read <id> --kind question             # 取全文,kind 照抄 search 结果的 type"
 Write-Host ""
 Write-Host "本套件不合成回答(ADR-0008,零模型依赖):kd search 只出清单,挑中的条目用 kd read 取全文,"

@@ -1,6 +1,6 @@
 # 票 #23:`kd read` 丢弃正文配图（`html2text` 吞 `<img>`）
 
-状态: 🔄 待实现(2026-09-17 实测确认) | 依赖:无（与票 #22 相互独立，可并行） | 优先级:P2
+状态: 🔄 待实现(2026-09-17 实测确认;2026-09-29 复核,问题仍在) | 依赖:无（与票 #22 相互独立，可并行） | 优先级:P2
 证据: `docs/research/2026-09-17-金蝶知识库配图链路实测.md`、`docs/research/2026-09-17-配图纳入回答的接入方案.md`
 
 ## 问题
@@ -18,11 +18,15 @@
 
 ### 根因
 
-`src/kd/_core_impl.py:305`（`html2text()` 内）：
+`src/kd/_impl/_text.py:21`（`html2text()` 内）：
 
 ```python
 h = re.sub(r"<[^>]+>", "", h)
 ```
+
+> ⚠️ **2026-09-29 复核更正路径**:原写 `src/kd/_core_impl.py:305` —— 该文件已不存在
+> （实现体在 v6.4 拆包为 `src/kd/_impl/`,`html2text` 现居于 `_text.py`,通配删标签那行
+> 是 `_text.py:21`）。行号更正,缺陷本身**未变**。
 
 这个通配正则的本意是"剥掉剩余标签"。它**先**处理了 `</p>` / `<br>` / `</td>` 等结构性标签（转成换行/制表符），**再**执行这一行——于是 `<img src="...">` 作为"剩余标签"被整体删除，连 URL 都不留。
 
@@ -33,6 +37,44 @@ h = re.sub(r"<[^>]+>", "", h)
 - **所有** `kd read` / `kd ask` 的正文都没有图。`ask` 共用同一个 `html2text()`。
 - 金蝶文档的图**大量是操作截图**（界面路径指示），其信息在正文文本里常常缺失——这正是这类文档"看文字看不明白、一看图就懂"的原因。丢弃图片等于丢弃了这类文档的核心信息。
 - 实测图密度不低：抽检两篇分别为 **5 图**（24397 字符）与 **7 图**（31963 字符）；另一轮抽样（见调研文档）称 6 篇均值 11.7 图/篇、最大 32 图。**图密度是这篇文档的信息主体之一，不是一个可以忽略的边缘字段。**
+
+## 复核记录（2026-09-29）
+
+**问题仍在**。当日直调本仓 HTML→文本函数复测，实跑如下。
+
+定位函数:`src/kd/_impl/_text.py:9`（`html2text`）；销毁 `<img>` 的那条通配正则:
+`src/kd/_impl/_text.py:21`（`h = re.sub(r"<[^>]+>", "", h)`）。
+消费方:`src/kd/_impl/_detail.py:32` / `:49` / `:108` / `:203` 均以 `html2text(...)` 产
+`contentText`,故 `kd read` 与检索侧 `snippet` 一并无图。
+
+执行命令：
+
+```bash
+python3 -c "
+import sys
+sys.path.insert(0, 'src')
+from kd._impl._text import html2text
+src = '<p>操作步骤:</p><img src=\"https://example.com/a.png\"><p>完成</p>'
+out = html2text(src)
+print(repr(out))
+for probe in ('https://example.com/a.png', '/a.png', 'img', '.png', 'example.com'):
+    print('  contains %-28r -> %s' % (probe, probe in out))
+"
+```
+
+真实输出片段（逐字）：
+
+```
+'操作步骤:\n完成'
+  contains 'https://example.com/a.png'  -> False
+  contains '/a.png'                     -> False
+  contains 'img'                        -> False
+  contains '.png'                       -> False
+  contains 'example.com'                -> False
+```
+
+**读法**：`<img>` 整个标签连同 `src` 被删除，输出里连 `img` 这个字面都不存在——
+不是"URL 被改写"，而是**零痕迹销毁**，与定票时的判断一致。缺陷未修复，本票保持待实现。
 
 ## 改动
 

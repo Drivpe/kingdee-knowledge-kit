@@ -1,13 +1,33 @@
 #!/usr/bin/env python3
 """kd._impl._net —— 上游 HTTP 出口与检索词硬闸。
 
-全包**唯一**发起上游请求的地方:预算领取与限速都在这里落地,故
-"预算是否真的是硬上限"只需审视本模块。
+全包**唯一**发起上游请求的地方,故"限速是否真的生效"只需审视本模块。
+
+⚠️ **两个消费方必须走模块属性访问,不得 `from ._net import _get_json`**
+(2026-09-29 出口统一,ADR-0017 前置):
+
+    from ._net import _get_json      # ❌ import 期快照,替换 `_net._get_json` 对它无效
+    from . import _net               # ✅ 调用点写 `_net._get_json(...)`
+    ... _net._get_json(url, rate)
+
+这条纪律不是洁癖:`_upstream` 与 `_detail` 原先是快照形态,于是**没有任何单一注入点
+能拦住全部上游请求**。实测(用 `sitecustomize` 钩 `urllib.request.urlopen` 跑完整
+48 条离线用例)抓到 **1 次真实上游请求而 48/48 仍全绿**,承重点是装机自检
+(`install.sh` / `install.ps1`)—— 跑在用户机器上,有网就发、没网就静默吞。
+
+⚠️ **限速器同样是快照陷阱**:本模块原先 `from ._config import _RATE`,于是
+`_net._RATE is _config._RATE -> True`——替换任一侧都不生效。现改属性访问,
+"替换 `_net._get_json` 即零网络 / 替换 `_config._RATE` 即换限速器"两条注入通路才成立。
+
+⚠️ **预算机制已于 v6.6 整体删除**(ADR-0016 决策 3):跨页扫描删除后每路恒发
+1 次请求(实测 7 词 = 7 次),预算**永不可触发**,留着是死机制。`_get_json` 因此
+不再收 `budget` 形参——限额领取原本是它的第一件事,现在整段消失。
 """
 import json
 import urllib.request
 
-from ._config import HDRS, UPSTREAM_TEXT_MAX, _RATE, _up_inc
+from . import _config
+from ._config import HDRS, UPSTREAM_TEXT_MAX
 from ._errors import QueryTooLong, UpstreamError
 
 
@@ -27,16 +47,15 @@ def clamp_query(text, limit=None, strict=False):
     return clamped
 
 
-def _get_json(url, budget=None, rate=None):
-    """上游 GET → 解析后的 JSON。预算与限速的唯一落地处。
+def _get_json(url, rate=None):
+    """上游 GET → 解析后的 JSON。限速的唯一落地处。
 
-    顺序有讲究:领取名额必须在 `_RATE.wait()` **之前**——限速等待期间持有名额,
-    才能保证"同时最多 max 个线程在飞",而不是"同时最多 max 个线程通过了检查"。
+    ⚠️ **本函数是全内核唯一的上游请求出口**(唯一注入点)。调用方必须经
+    `_net._get_json` 属性访问,不得 import 期绑定——理由见模块 docstring。
+    替换它即零网络(离线组"真的不联网"的实现基础)。
     """
-    if budget is not None:
-        budget.acquire()
-    _RATE.wait(rate)
-    _up_inc()
+    _config._RATE.wait(rate)
+    _config._up_inc()
     req = urllib.request.Request(url, headers=HDRS)
     with urllib.request.urlopen(req, timeout=20) as r:
         d = json.loads(r.read().decode("utf-8", "replace"))
@@ -45,3 +64,4 @@ def _get_json(url, budget=None, rate=None):
     if isinstance(d, dict) and d.get("errorCode"):
         raise UpstreamError(int(d["errorCode"]), str(d.get("message") or "")[:200])
     return d
+

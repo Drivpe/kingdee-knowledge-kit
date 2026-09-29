@@ -2,7 +2,7 @@
 """kd 启动器(仓库内直跑用,免设 PYTHONPATH)。
 
   python3 src/kd_run.py --help
-  python3 src/kd_run.py ask "信用额度控制"
+  python3 src/kd_run.py search --kw "信用额度控制"
 
 包内等价形态(需 PYTHONPATH):PYTHONPATH=src python3 -m kd --help
 """

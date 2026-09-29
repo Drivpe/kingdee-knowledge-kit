@@ -1,9 +1,10 @@
 [project]
 name = "kingdee-knowledge-kit"
-# 单一真源:与 src/kd/_impl/_config.py 的 VERSION 保持一致(6.4.0 是 6.4 的 PEP 440 三段写法)。
-# 6.4 = 契约重构(决策 D4-D14,2026-09-27):清单改帖子级、type/kind 统一改 question、
-# 产品线字面推导整体删除、清单分页删除、字段集收进 contract.json。
-version = "6.5.0"
+# 单一真源:与 src/kd/_impl/_config.py 的 VERSION 保持一致(6.6.0 是 6.6 的 PEP 440 三段写法)。
+# 6.6 = 检索词生成权移交调用层(ADR-0016,2026-09-28)**破坏性变更**:内核不再生成任何
+# 检索词(拆词器/路序表/截断优先级删除)、CLI 删位置参数与 --type/--max-routes/--budget/--chunk、
+# 预算机制删除、--product 三态收两态、清单字段集按类型分三份、read 截断改字符串枚举。
+version = "6.8.0"
 description = "kd — 金蝶官方知识库检索 CLI(匿名免费:零账号/零点数/零模型)。只出帖级标题清单(search)与全文(read),不做任何排序评分;合成权在调用方 agent。"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -33,10 +34,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# query_routes.json 是包内数据文件(多路拆解规则/预算/限速档),
-# 缺它则原句路/症状词路/实体规则全部失效,内核会静默退回内置默认值
+# contract.json 是**唯一**的包内数据文件(v6.6,ADR-0016):对外返回体的单一来源
+# (字段集三份/禁止键/产品线编号表/内核运行参数 limits),代码与测试都读它。
+# 原 query_routes.json 随拆词器与预算机制删除,其仍有效的两个值(路数上限、限速档)
+# 已并入 contract.json 的 limits 段。缺 contract.json 则内核静默退回内置兜底值
 # ——装出来的行为与开发中的不是同一个东西。必须随包分发。
-# contract.json 同理:它是清单字段集/禁止键/产品线编号表的**单一来源**,
-# 代码与测试都读它;缺它则内核回落内置兜底键集(不炸,但"单一来源"失效)。
 [tool.setuptools.package-data]
-kd = ["query_routes.json", "contract.json"]
+kd = ["contract.json"]

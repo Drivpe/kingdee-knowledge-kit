@@ -83,6 +83,23 @@ v6 的"三级回退"退化为两级;`kd health` 的 `landing` 字段、`docstore
 既未设 `journal_mode=WAL` 也未显式设 `busy_timeout`。单进程独占时未暴露;多进程(每次 `kd` 调用
 一个进程)后**必须**补上,否则会踩 `SQLITE_BUSY`。此为迁移前置条件,不是可选项。
 
+**⚠️ 条件说明(2026-09-29 补,ADR-0017 决策 3):上述前提已消失,本决策当前不实现。**
+本决策的理由是"采集类脚本(`run_eval.py`)是**自动循环**而非人工逐次触发",而 `run_eval.py`
+连同 `corpus_fullscan.py` / `discovery_sweep.py` / `releasenotes_ingest.py` /
+`releasenotes_probe.py` 已随去服务化**整体删除**(`scripts/` 目录不存在,`git log --diff-filter=D`
+可证),故"跨进程限速"当前**零可达**——调用方是 LLM agent 每次手动 `kd search`。
+因此上面那句"此为迁移前置条件,不是可选项"**在当前形态下不再适用**。
+
+**但缺口是真的,已实测**:`_RATE = _RateLimiter()` 仍是进程内状态,6 进程并发各 6 次调用时
+聚合速率线性放大(1 进程 8.40 req/s → 6 进程 **38.40 req/s**,名义 2.5 的 15.4 倍)。
+唯一会让它变成现实风险的场景是**多进程并发调用**——本机的 Agent Teams 模式
+(多个 agent 并行跑 `kd search`)即命中。
+
+**若将来重新引入自动循环脚本,或出现多进程并发调用方**,本决策必须重新评估——
+届时 `journal_mode=WAL` 与显式 `busy_timeout` 是**硬前置,不是可选项**。
+详见 `docs/adr/0017-上游频率红线重新读数.md` 与
+`docs/research/2026-09-29-内核自述与实际行为出入复核.md` §3。
+
 ### 6. 命名:保留 `kd`,不改
 
 否决"命令统一 `ly` 前缀":`~/.kd/` 目录**已被 `ly` 占用**(`ly/config.py:13` 读 `~/.kd/config.json`,
@@ -137,5 +154,9 @@ v6 的"三级回退"退化为两级;`kd health` 的 `landing` 字段、`docstore
 
 ## 未决与待办
 
-- `~/.lingeebuild/releasenotes` **实际为空(0 篇)**,而 `SKILL.md` 将其写为「官方已修复类问题的
-  终审依据」、第 2 步教用 `rg` 查它。文档承诺了不存在的能力——单独记为待办,不在本 ADR 范围。
+- ~~`~/.lingeebuild/releasenotes` **实际为空(0 篇)**,而 `SKILL.md` 将其写为「官方已修复类问题的
+  终审依据」、第 2 步教用 `rg` 查它。文档承诺了不存在的能力——单独记为待办,不在本 ADR 范围。~~
+  **✅ 已消解(2026-09-29 台账校正)**:`SKILL.md` 已无「终审依据」与 `releasenotes` 字样
+  (全仓 `rg` 零命中),现行口径见 `SKILL.md:335-337` —— 明确声明**本套件没有本地发版说明库**
+  (随去服务化取消),这类问题改走 `kd search` 召回 + 站外搜索
+  `site:vip.kingdee.com 发版说明 <关键词>`。原待办已闭环,不留悬挂项。

@@ -6,7 +6,10 @@
   src/kd/cli.py       argparse 命令面(search / read / health)
   src/kd/__main__.py  python -m kd 入口
   src/kd/_impl/       私有实现包(按职责拆分的子模块)
-  src/kd/query_routes.json  多路拆解规则(数据文件,语料可配置)
+  src/kd/contract.json  对外契约声明的单一来源(字段集/产品线表/链接政策/运行上限)
+
+⚠️ v6.6 起 `query_routes.json` 已随拆词器整体删除(ADR-0016),其残余的两个值
+(路数上限、限速档)并入 `contract.json` 的 `limits` 段——本包现在**只有一个数据文件**。
 
 导入方式:把 `src/` 加进 sys.path 后 `from kd import core`;或直接用仓库根的启动器
 `python3 src/kd_run.py …`(它自建 bootstrap),以及 `PYTHONPATH=src python3 -m kd …`。

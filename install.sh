@@ -37,13 +37,12 @@ echo "[install] 安装到 $ROOT"
 mkdir -p "$ROOT/lib" "$ROOT/bin"
 rm -rf "$ROOT/lib/kd"
 cp -r "$REPO/src/kd" "$ROOT/lib/kd"
-# 包内数据文件:拆解规则/预算/限速档(query_routes.json)+ 对外契约声明(contract.json)。
-# 缺任一个,内核会静默退回内置默认值 —— 装出来的行为与开发中的不是同一个东西
-# (历史上漏拷过 query_routes.json)。故两个都校验,注释与代码一致。
-# ⚠️ 2026-09-28 修:此前注释说"检查两个数据文件",代码只查了 query_routes.json
-# —— 察觉到一半。contract.json 缺失时 health 冒烟不受影响(其键只有测试用),
-# 靠冒烟抓不住,只能在这一步显式校验。
-for f in query_routes.json contract.json; do
+# 包内数据文件:对外契约声明(contract.json)。**v6.6 起它是唯一一个数据文件**
+# ——原 query_routes.json(拆解规则/预算/限速档)随拆词器与预算机制一并删除,
+# 其仍有效的两个值(路数上限、限速档)并入 contract.json 的 limits 段(ADR-0016)。
+# 缺它则内核静默退回内置兜底键集与默认值 —— 装出来的行为与开发中的不是同一个东西
+# (历史上漏拷过 query_routes.json)。故仍在此显式校验。
+for f in contract.json; do
   [ -f "$ROOT/lib/kd/$f" ] || { echo "[install] ✗ 缺 lib/kd/$f" >&2; exit 1; }
 done
 
@@ -159,8 +158,8 @@ echo "  pipx install kingdee-knowledge-kit && kd health"
 echo ""
 echo "完成!试一试:"
 echo "  kd health                                # 内核自检(库模式:无服务、无端口)"
-echo "  kd search \"信用额度控制\" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
-echo "  kd search --kw \"信用额度\" --kw \"应收单 信用\"   # 自己拆好词传进去(替代自动拆解,原句路仍会发)"
+echo "  kd search --kw \"信用额度控制\" --product 93   # 出清单(标题级,带 hitRoutes/routes),你自己挑"
+echo "  kd search --kw \"信用额度\" --kw \"应收单 信用\"   # 拆好词按序传入:每个 --kw 一路,内核不再自行拆词"
 echo "  kd read <id> --kind question             # 取全文,kind 照抄 search 结果的 type"
 echo ""
 echo "本套件不合成回答(ADR-0008,零模型依赖):kd search 只出清单,挑中的条目用 kd read 取全文,"

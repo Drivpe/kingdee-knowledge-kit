@@ -15,22 +15,30 @@
   2. 把全部内部件汇集到**本包命名空间**,成为内部件的**唯一名字解析点**——
      `kd.core._impl()` 返回本包对象,测试/自检经它读内部件(守卫判据 7 逐项校验
      `cli.cmd_health` 依赖的名字仍可解析)。
-     ⚠️ 正因如此,子模块**跨模块调用上游出口时必须经本包命名空间解析**
-     (见 `_manifest._resolve`),否则测试替换 `kd._impl._search_upstream` 注入故障
-     会失效——原单文件实现里那种替换是生效的,拆分不得破坏它。
 
 子模块地图:
   _errors    三个对外异常类(类对象身份被 kd.core 复用)
-  _config    单一真源常量、路由配置、契约声明(contract.json)、预算、限速、上游计数、log
+  _config    单一真源常量、契约声明(contract.json)、限速、上游计数、log
   _net       上游 HTTP 出口(_get_json)、检索词硬闸(clamp_query)
+             ⚠️ **本模块的 `_get_json` 是全内核唯一的网络出口**(2026-09-29 更正:
+             原文说这个位置属于 `_search_upstream`,**那句是错的** —— 深读侧 5 个
+             调用完全不经过它)。调用方一律属性访问(`_net._get_json`),不得快照
   _text      html2text、标题降级链(_title_of)
   _upstream  上游检索调用与条目规范化(_norm_item)、链接模板(_URL_OF)
              ⚠️ 上游 `answer` → 对外 `question` 的**唯一映射点**在这里
-  _routes    拆解器(_plan_routes)、路去重(_dedupe_routes)
-             ⚠️ 产品线判定已于 2026-09-27 整体删除,product_id 直通
-  _manifest  多路清单执行链(唯一检索路径)、帖级归并(_manifest_merge)
+             ⚠️ 本模块的 `_search_upstream` 是**检索侧**的唯一出口(不是全内核的)
+  _routes    调用方给的词 → 检索路(_plan_routes)、路去重(_dedupe_routes)
+             ⚠️ 拆词器已于 v6.6 整体删除(ADR-0016):本模块**不生成任何检索词**
+  _manifest  多路清单执行链(唯一检索路径)、帖级归并(_manifest_merge)、声明投影
   _detail    按 kind 读全文
   _public    公开面函数 search / read
+
+⚠️ **v6.6 导出面收缩**(ADR-0016,2026-09-28):随机制删除的导出有
+`_Budget` / `_BudgetExhausted` / `_cfg_budget_search_max` / `_route_cfg` /
+`_ROUTE_CFG_PATH`(预算与旧配置源)、`upstream_type_of`(随 `--type` 删除)、
+`_salient_chunks`(拆词器)、`_truncate_routes` / `_route_sorts_type` / `_MAX_SCAN_PAGES`
+(截断优先级与跨页扫描)。`cli.cmd_health` 的 `_cp.<name>` 引用已同步——
+**删机制时漏同步这里会让 health 崩**,守卫判据逐项校验。
 """
 
 # ---- 版本单一真源(包 __version__ 与 cli._VERSION 都从此取) ----
@@ -48,54 +56,66 @@ from ._config import (  # noqa: F401
     HDRS,
     UPSTREAM_TEXT_MAX,
     VIP,
-    _Budget,
-    _BudgetExhausted,
     _CONTRACT,
     _CONTRACT_PATH,
-    _FALLBACK_FORBIDDEN_KEYS,
+    _FALLBACK_BY_TYPE_KEYS,
     # ⚠️ 兜底键集与 _CONTRACT 缓存对外导出是**刻意的**:回归用例要拿它们与声明做
     # **交叉核对**(两边同源就恒等成立,见 t_contract_fallback_in_sync 的 2026-09-28 更正),
     # 还要模拟"声明读不到"以验证兜底分支真的会生效。不导出等于那条断言只能自比。
-    _FALLBACK_RESULT_KEYS,
-    _ROUTE_CFG_PATH,
+    _FALLBACK_COMMON_KEYS,
+    _FALLBACK_FORBIDDEN_KEYS,
+    _FALLBACK_BURST,
+    _FALLBACK_MAX_DETAIL,
+    _FALLBACK_MAX_KEYWORDS,
+    _FALLBACK_TOP_KEYS,
     _RATE,
-    _cfg_budget_search_max,
     _contract,
+    _limits,
+    _burst,
+    _burst_of,
     _rate_profile,
-    _route_cfg,
     _up_now,
     apply_link_policy,
-    cfg_max_routes,
+    contract_loaded,
     default_product_id,
     link_for,
     link_policy,
     log,
+    max_detail_knowledge,
+    max_keywords,
     result_forbidden_keys,
     result_keys,
     top_keys,
 )
 from ._net import _get_json, clamp_query  # noqa: F401
 from ._text import _is_true, _title_of, html2text  # noqa: F401
-from ._upstream import _URL_OF, _norm_item, _search_upstream, upstream_type_of  # noqa: F401
-from ._routes import _dedupe_routes, _plan_routes, _salient_chunks  # noqa: F401
+from ._upstream import _URL_OF, _norm_item, _search_upstream  # noqa: F401
+from ._routes import _dedupe_routes, _plan_routes, _stamp_product  # noqa: F401
 from ._manifest import (  # noqa: F401
-    _MAX_SCAN_PAGES,
     _PER_ROUTE_WANT,
     _manifest_fuse,
     _manifest_key,
     _manifest_merge,
     _manifest_project,
-    _manifest_rank,
     _route_search_once,
-    _route_sorts_type,
     _search_manifest,
+    project_top,
 )
 from ._detail import (  # noqa: F401
     _DETAIL_FN,
     _DETAIL_KINDS,
     _answer_brief,
     _article_detail,
-    _detail,
     _knowledge_article,
     _question_detail,
 )
+# ⚠️ **`_detail` 函数改名为 `_detail_fn` 导出**(2026-09-29,工单 #33)。
+# 原先写 `from ._detail import _detail` —— 那个名字**遮蔽了同名的子模块**:
+#     import kd._impl._net as m     -> module    (可用)
+#     import kd._impl._detail as m  -> function  (不是模块!)
+#     kd._impl._detail._get_json    -> AttributeError
+# 这是本包唯一的一处真遮蔽(其余 8 个撞车名的包属性确实就是子模块对象)。
+# 代价已经真实发生:回归测试为此专门写了 `_upstream_mod()` / `_detail_mod()`
+# 两个 helper **绕道 `sys.modules`**,并注明"不能写 `import kd._impl._detail as m`"。
+# 改名后 `import kd._impl._detail` 语义正确,两个 helper 可直接简化为普通 import。
+from ._detail import _detail as _detail_fn  # noqa: F401

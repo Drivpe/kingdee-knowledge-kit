@@ -4,10 +4,17 @@
 契约(不变):stdout 只出 JSON,进度/日志走 stderr,错误是带 hint 的 JSON,
 退出码 0=成功 / 1=上游或内部错误 / 2=用法错误(argparse),永不交互、永无 ANSI 色码、强制 UTF-8。
 
-命令面三条:search / read / health。`ask` 已于 2026-09-18 删除(ADR-0013:
-两套排序哲学并存、RRF 是有损压缩;检索收敛为「清单 → 挑选 → 全读」一条路径)。
-`share` 已于 2026-09-17 删除。子命令一律**真正删除**,不留 "unsupported" 占位
-——占位会把「已知失败」混进后续回归基线。
+命令面三条:search / read / health。`ask` 已于 2026-09-18 删除(ADR-0013)。
+子命令一律**真正删除**,不留 "unsupported" 占位——占位会把「已知失败」混进回归基线。
+
+⚠️ **v6.6 参数面破坏性变更**(ADR-0016 决策 3,2026-09-28):
+  * **删位置参数**:`kd search "整句"` 不再成立,改 `kd search --kw "词1" --kw "词2"`。
+    内核不再拆词(决策 1),检索词只来自调用方,`--kw` 是唯一入口。
+  * **删 `--type`**:调用方从清单条目的 `type` 字段自己筛类型。
+  * **删 `--max-routes`**:上限只在声明里一个值(`limits.maxKeywords`),超限按顺序取前 N。
+  * **删 `--budget`**:每路恒 1 次请求,预算永不可触发。
+  * **删 `--chunk`**:解析后立刻报错的空参数,连帮助文本一并删(与已删的 `ask` 同处理)。
+  * **`--product` 三态收两态**:不传与传 `None` 同义(都是默认),不过滤只由显式 `0` 表达。
 """
 import argparse
 import json
@@ -19,8 +26,8 @@ from . import core
 _IMPL = core._impl()
 
 _VERSION = _IMPL.VERSION
-# --type(search)与 --kind(read)是同一集合的两个入口,只保留一个名字:
-# 集合的语义是"实体类型白名单",与真源 _config.ENTITY_KINDS 同名根。
+# kind 白名单只有一个来源:实现体的 ENTITY_KINDS。`--type` 已随 v6.6 删除,
+# 现在只有 `read --kind` 用它(集合语义仍是"实体类型白名单")。
 _VALID_KINDS = _IMPL.ENTITY_KINDS
 
 
@@ -57,7 +64,7 @@ def _guard(fn, op="search"):
     毫无关系,把排查方向直接带偏(工单 #24 记录的误导项)。
     """
     read_op = (op == "read")
-    _ex = 'kd read 402990431979506944' if read_op else 'kd search "信用额度控制"'
+    _ex = 'kd read 402990431979506944' if read_op else 'kd search --kw "信用额度控制"'
     try:
         return fn()
     except core.QueryTooLong as e:
@@ -74,6 +81,16 @@ def _guard(fn, op="search"):
         }})
         sys.exit(1)
     except core.InternalError as e:
+        # ⚠️ **`other` 档不是用法错误**(2026-09-29,code review L10):它是**合法类型
+        # 但没有全文端点** —— 报 `usage` + "查看用法: kd --help" 与它自己的 message
+        # ("你其实没传错")正相矛盾,会把调用方引向"改参数"而那不是解法。
+        # 故按能力边界报 `unsupported_kind`(退出码仍是 1:这不是命令行用错)。
+        if "没有它的全文端点" in str(e) or "合法类型" in str(e):
+            _fail("unsupported_kind", str(e),
+                  hint="这是**已知的能力边界**,不是参数写错:该档收容的上游罕见实体"
+                       "没有统一可用的详情端点。清单条目已给出 title 与 upstreamType,"
+                       "可据此判断要不要另找途径。",
+                  example='kd search --kw "课程" --include-other')
         _usage_error(str(e), hint="查看用法: kd --help", example=_ex)
     except core.UpstreamError as e:
         if read_op:
@@ -83,7 +100,7 @@ def _guard(fn, op="search"):
                        "请回到 search 清单照抄条目的 id/type 后重试。",
                   example=_ex)
         _fail("upstream_error", "上游业务错误 errorCode=%s: %s" % (e.code, e.message),
-              hint="上游以 HTTP 200 返回错误壳(常见于 text 超 100 字符或接口变更);请勿高频重试",
+              hint="上游以 HTTP 200 返回错误壳(常见于检索词超 100 字符或接口变更);请勿高频重试",
               example=_ex)
     except KeyError as e:
         _fail("bad_argument", "无法识别的参数: %s" % e,
@@ -97,32 +114,27 @@ def _guard(fn, op="search"):
 def cmd_search(a):
     # ⚠️ `--product` 不传时**不传该实参**,让内核用它自己的签名默认(= 声明里的
     # 产品线默认编号)。不能写成 `product_id=a.product` + argparse default=None:
-    # 那会把"CLI 用户没传"表达成"显式 None",而显式 None 的语义是**不过滤**
-    # (内核值域三态,见 core.search docstring)——静默把默认过滤丢掉的正是这类错。
+    # 那会把"CLI 用户没传"表达成"显式 None",进而无法区分"没传"与"显式不过滤"
+    # ——本内核的语义是"不传即默认",而"不过滤"只由显式 0 表达(ADR-0016 决策 3)。
     kw = {} if a.product is None else {"product_id": a.product}
-    pack = _guard(lambda: core.search(a.text, keywords=a.kw,
-                                      global_=a.global_, type_=a.type,
-                                      max_routes=a.max_routes, budget=a.budget, **kw))
-    _prog("多路拆解 %d 路: %s" % (len(pack.get("queries") or []),
+    pack = _guard(lambda: core.search(keywords=a.kw, global_=a.global_,
+                                      include_other=bool(a.include_other), **kw))
+    _prog("多路检索 %d 路: %s" % (len(pack.get("queries") or []),
                                   " | ".join(str(q) for q in pack.get("queries") or [])))
-    if pack.get("routesDegraded"):
-        # 与内核 scanNote 同措辞(「N→M 路」),避免同一事实两套说法。
-        _prog("路数塌缩:%s→%d 路"
-              % (pack.get("routesPlanned"), len(pack.get("queries") or [])))
-    if pack.get("budget_exhausted"):
-        _prog("上游预算耗尽,清单不完整")
+    if pack.get("otherSkipped"):
+        # 罕见类型默认隐藏,但**必须可见**(工单 #32):否则"total 大而 results 小"
+        # 的差额又会变成无解释的静默。
+        _prog("隐藏 %d 条罕见类型(课程/路径/专题等;需 --include-other 才返回)"
+              % pack.get("otherSkipped"))
+    if pack.get("keywordsDropped"):
+        # ADR-0016 决策 4:丢词必须在人读进度里也可见(stderr),不止在返回体里。
+        _prog("收词超上限:丢弃 %d 个词(只发前 %d 个)"
+              % (pack.get("keywordsDropped"), len(pack.get("queries") or [])))
     _out(pack)
 
 
 def cmd_read(a):
-    if a.chunk:
-        # 官方 AI 引用 chunkId 溯源(ADR-0007 / 票 #20 的解析端)。
-        # chunk 溯源能力从未落地:官方无「按文档列出全部 chunk」端点,
-        # chunkId 的唯一来源是登录态 SSE 终止帧与官方分享对话 —— 消费端备好但无产出端可喂。
-        _fail("chunk_not_in_core", "--chunk(官方 AI 引用 chunkId 溯源)尚未并入 kd.core",
-              hint="该能力未落地:官方无「按文档列出全部 chunk」端点,chunkId 只能来自登录态;"
-                   "消费端已移除,当前无可用入口")
-    _out(_guard(lambda: core.read(a.kind, a.id, budget=a.budget), op="read"))
+    _out(_guard(lambda: core.read(a.kind, a.id), op="read"))
 
 
 def cmd_health(_a):
@@ -134,8 +146,6 @@ def cmd_health(_a):
     # 内部件在私有实现包里(kd._impl),kd.core 顶层不暴露。
     # 自检本就要读内部件,故经 core._impl() 观测口取——输出字段与取值逻辑不变。
     _cp = core._impl()
-    cfg = _cp._route_cfg()
-    routes_max = int(cfg.get("maxRoutes") or 7)
     missing = [n for n in core.__all__ if not hasattr(core, n)]
     _out({
         "ok": not missing,
@@ -147,15 +157,19 @@ def cmd_health(_a):
         "executable": sys.executable,
         "coreApi": list(core.__all__),
         "missingApi": missing,
-        "routesCfg": _cp._ROUTE_CFG_PATH,
-        "routesCfgLoaded": bool(cfg),
-        "maxRoutes": routes_max,
-        "budgetMax": _cp._cfg_budget_search_max(),
+        # ⚠️ v6.6:数据文件收敛为一个(contract.json)。原 routesCfg/routesCfgLoaded/
+        # budgetMax 三个字段随 query_routes.json 与预算机制一并删除——报它们等于
+        # 承诺不存在的能力(与"不留 unsupported 占位"同纪律)。
+        "contractCfg": _cp._CONTRACT_PATH,
+        "contractCfgLoaded": bool(_cp._contract()),
+        "maxKeywords": _cp.max_keywords(),
         "rateProfile": _cp._rate_profile(),
         "textMax": _cp.UPSTREAM_TEXT_MAX,
         "commands": ["search", "read", "health"],
         "note": "单入口检索(ADR-0013,2026-09-18):kd ask 已删除,search 是唯一检索入口"
-                "(多路拆词 + 只出标题清单 + 零排序评分),要全文走 kd read。"
+                "(多路关键词 + 只出标题清单 + 零排序评分),要全文走 kd read。"
+                "⚠️ v6.6(ADR-0016):内核**不再生成任何检索词** —— 检索词只来自调用方"
+                "(--kw),内核原样按序发送;拆词规范见 SKILL.md。"
                 "去服务化(工单 #20):kd 进程内直连 kd.core,不依赖 127.0.0.1:4097,"
                 "不读 KSEARCH_URL。",
     })
@@ -169,40 +183,42 @@ def build_parser():
                     "kd search 出多路清单(只给标题级信息)→ 你按标题匹配度挑 → kd read 取全文 →"
                     " 你按 docs/ANSWER-SPEC.md 合成回答。"
                     "本套件只产清单/全文、不合成回答(ADR-0008)——排序由上游综合排序决定,"
-                    "内核只去重,不产生任何评分。",
+                    "内核只去重,不产生任何评分。"
+                    "⚠️ 内核**不拆词**(ADR-0016):你必须先按 SKILL.md 的拆词规范把问题拆成"
+                    "关键词,再经 --kw 传入。",
         epilog='示例:\n'
-               '  kd search "应用为禁用状态[网关]" --product 93   # 唯一检索入口:多路清单,带 hitRoutes\n'
-               '  kd search --kw "2510" --kw "应用为禁用状态[网关]"  # 稀有 token 抢第 1 路 + 原句保召回\n'
-               '  kd read 402990431979506944                       # 从清单挑出 id 再读全文(kind 照抄 type)\n'
-               '  kd health                                        # 内核自检(库模式,无服务)',
+               '  kd search --kw "应用为禁用状态[网关]" --kw "2510"   # 唯一检索入口:每词一路,按序\n'
+               '  kd search --kw "信用额度控制" --kw "应收单 信用" --product 93\n'
+               '  kd read 402990431979506944                        # 从清单挑出 id 再读全文(kind 照抄 type)\n'
+               '  kd health                                         # 内核自检(库模式,无服务)',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version="kd %s(library mode)" % _VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("search", help="唯一检索入口:多路拆词检索,只出帖级标题清单"
-                                      "(每路 pageSize=10,按路序+上游原生序;要全文再用 kd read)",
+    s = sub.add_parser("search", help="唯一检索入口:多路关键词检索,只出帖级标题清单"
+                                      "(每路 pageSize=10,按你给词的顺序;要全文再用 kd read)",
                        epilog='示例:\n'
-                              '  kd search "应用为禁用状态[网关]" --product 93   # 清单带 hitRoutes/routes\n'
-                              '  kd search --kw "2510" --kw "应用为禁用状态[网关]" --product 93  # 稀有 token 抢第 1 路 + 原句保召回\n'
-                              '  kd search --kw "信用额度" --kw "应收单 信用"     # 显式关键词(LLM 拆词入口;第 1 词充原句路)\n'
-                              '  kd search "信用额度控制" --type question        # 类型过滤(每路各带,独立跨页扫描)\n'
-                              '  kd search "信用额度控制" --max-routes 1         # 退化为单路(上游原生序)\n'
-                              '  kd read 402990431979506944                      # 从清单里挑出的 id 再读全文',
+                              '  kd search --kw "应用为禁用状态[网关]" --kw "2510" --product 93\n'
+                              '  kd search --kw "信用额度" --kw "应收单 信用"   # 拆好的词,按序发,每词一路\n'
+                              '  kd search --kw "信用额度控制" --product 0      # 0=不过滤(显式才生效)\n'
+                              '  kd read 402990431979506944                     # 从清单里挑出的 id 再读全文',
                        formatter_class=argparse.RawDescriptionHelpFormatter)
-    s.add_argument("text", nargs="?", default=None,
-                   help="关键词(具体功能名/业务名词/报错词);只给 --kw 时可省略")
-    s.add_argument("--kw", action="append", default=None,
-                   help="显式关键词(可重复,每词一路)——LLM 拆好词的入口。"
-                        "原句路恒常存在:给了 text 由 text 充任,只给 --kw 时第 1 个 --kw 充任")
+    # ⚠️ 位置参数 `text` 已删除(ADR-0016 决策 3):内核不拆词,`--kw` 是唯一入口。
+    s.add_argument("--kw", action="append", default=None, required=True,
+                   help="检索词(可重复,**每词一路**)。**内核原样、按你给的顺序发送**"
+                        "(不拆解/不扩充/不前置/不排序)。顺序即召回顺序:排序键第一维是"
+                        "『你给的第几个词』。拆词规范见 SKILL.md 的「拆词规范」节。"
+                        "超过上限(默认 7 词)按顺序取前 N 个,返回体写明 keywordsDropped")
     s.add_argument("--product", type=int, default=None,
                    help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 2=星空侧二开问答专区 "
                         "0=不过滤(显式指定才生效)。产品线由你判定;不传即默认,内核不做字面推导")
-    s.add_argument("--type", choices=list(_VALID_KINDS), default=None, help="按实体类型过滤")
-    s.add_argument("--max-routes", dest="max_routes", type=int, default=None,
-                   help="最多用几路拆词(默认取 maxRoutes=7;1=单路精确)")
     s.add_argument("--global", dest="global_", action="store_true", help="跨全部产品")
-    s.add_argument("--budget", type=int, default=None,
-                   help="上游请求硬上限覆盖(默认 24,超限即停并置 budget_exhausted)")
+    s.add_argument("--include-other", dest="include_other", action="store_true",
+                   help="**返回「其他」档**(默认隐藏)。上游除三类已知实体外还返回罕见"
+                        "类型(课程/学习路径/专题/直播),它们质量低且不是同一种资料,"
+                        "故默认不混进清单。隐藏时返回体写明跳过了多少条"
+                        "(otherSkipped),故『没看到』永远能区分是开关还是上游没有。"
+                        "⚠️ 这一档不给网页链接(实测无可点形式)")
     s.set_defaults(fn=cmd_search)
 
     s = sub.add_parser("read", help="取全文:先用 kd search 出清单,再 kd read 挑中的条目"
@@ -216,13 +232,6 @@ def build_parser():
     s.add_argument("id", help="search 结果条目的 id(帖子级:问答条目传的就是帖子号)")
     s.add_argument("--kind", choices=list(_VALID_KINDS), default="knowledge",
                    help="实体类型,照抄 search 结果的 type 字段(默认 knowledge)")
-    s.add_argument("--chunk", action="store_true",
-                   help="按官方 AI 引用 chunkId 匿名读块全文(ADR-0007;该能力未落地,"
-                        "当前无可用入口——执行时报错而非静默忽略)")
-    s.add_argument("--budget", type=int, default=None,
-                   help="上游请求硬上限覆盖;不传即不设限(read 的请求数随帖子长度变化,"
-                        "没有像样的固定默认档)。⚠️ 问答帖的深读可能多请求,"
-                        "给一个很小的值会得到 truncated 的部分结果")
     s.set_defaults(fn=cmd_read)
 
     s = sub.add_parser("health", help="内核自检(库模式:无服务、无端口、无 HTTP)",

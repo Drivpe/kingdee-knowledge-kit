@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""kd._impl._config —— 单一真源常量、配置读取、预算与限速。
+"""kd._impl._config —— 单一真源常量、契约声明、限速、上游计数。
 
-本模块只依赖标准库,是全包的依赖汇点:改版本号/预算档/限速只改这里,
+本模块只依赖标准库,是全包的依赖汇点:改版本号/路数上限/限速只改这里,
 不会牵动检索逻辑。
+
+⚠️ **v6.6 结构变更**(ADR-0016,2026-09-28):原 `query_routes.json`(拆解规则 +
+预算 + 限速)整体删除,其仍有效的两个值(路数上限、限速档)并入 `contract.json`
+的 `limits` 段——**包内数据文件从两个收敛为一个**。同时删除的还有:
+  * **预算机制整套**(`_Budget` / `_BudgetExhausted` / `_cfg_budget_search_max` /
+    `KSEARCH_SEARCH_BUDGET`):跨页扫描删除后每路恒发 1 次请求(实测 7 词 = 7 次),
+    预算**永不可触发**,留着是死机制(ADR-0016 决策 3/5)。
 """
 import json
 import os
@@ -17,33 +24,58 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.
 HDRS = {"User-Agent": UA, "Accept": "application/json"}
 
 # ---- 单一真源(守卫/回归钉住,勿在别处复制字面量) ----
-# 版本号:pyproject.toml 的 version 与此处一致(6.5.0 = 6.5 的三段写法),
+# 版本号:pyproject.toml 的 version 与此处一致(6.6.0 = 6.6 的三段写法),
 # __init__.__version__ 与 cli._VERSION 均从此处取。
-# 6.5 = 全面修复(ADR-0015,2026-09-28):链接口径按 kind 分档、稀有数字 token 抢第 1 路、
+# 6.8 = 台账校正轮收尾(2026-09-29,**含行为修复**):并发翻页的**已完成页不再被丢弃**
+#       (首次修复只保住首页;实测同构造下 HEAD 保 8 条、修前得 5 条、修后得 8 条)、
+#       `_FALLBACK_BURST` 收成共享单一来源并消除与限速器的静默分叉(空档位时 7 vs 1)、
+#       删 `_URL_OF["other"]` 死键、删回归套件两个绕道 helper(工单 #33 项三 3.2 收口)、
+#       文档一致性钉子纳入 `CONTEXT.md`(此前它漂移出相反口径而无人抓)。
+#       ⚠️ 对外契约**未变**(顶层键集/字段集/linkPolicy 均不动),故非破坏性变更;
+#       抬版本的理由是"实现行为有实质修复",而非契约变更。
+# 6.7 = 内核行为出入修复与交互提速(ADR-0017,**破坏性变更**):顶层删 `routesDegraded`
+#       (用户裁定「重复的就不要提示了」;它原先报得自相矛盾)、`search` 新增顶层
+#       `otherSkipped` 与 `include_other` 形参、清单新增 `other` 档(罕见类型默认隐藏)、
+#       `question` 的 url 改为带回答号的长形式且 `linkPolicy.question` 由 no-link 改 link、
+#       `limits.rate` 上调到 burst 7 / rps 5、`limits` 新增 maxDetail、
+#       `read` 删 `max_answer_pages`、网络出口统一为 `_net._get_json` 单点。
+#       施工记录见 docs/specs/2026-09-29-内核行为出入修复与交互提速-施工规格.md。
+# 6.6 = 检索词生成权移交调用层(ADR-0016,2026-09-28)**破坏性变更**:
+#       内核不再生成任何检索词(拆词器/路序表/截断优先级整体删除)、CLI 删位置参数与
+#       --type/--max-routes/--budget/--chunk、预算机制删除、--product 三态收两态、
+#       清单字段集按类型分三份、read 截断改字符串枚举、topKeys 补消费者。
+# 6.5 = 全面修复(ADR-0015):链接口径按 kind 分档、稀有数字 token 抢第 1 路、
 #       字段集检查改三段对账、read 的 budget 契约统一、「按标题挑」判据入文档。
-# 6.4 = 契约重构(决策 D4-D14,2026-09-27):清单改**帖子级**、type/kind 统一改名
-#       question、产品线字面推导整体删除、清单分页删除、字段集收敛并收进 contract.json。
+# 6.4 = 契约重构(决策 D4-D14):清单改**帖子级**、type/kind 统一改名 question、
+#       产品线字面推导整体删除、清单分页删除、字段集收敛并收进 contract.json。
 # 6.3 = 单入口检索(ADR-0013):kd ask 删除、公开面收敛为 search/read + 三异常、零算法排序。
-VERSION = "6.5"
+VERSION = "6.8"
 
-# 实体类型白名单:search 的 --type 与 read 的 --kind 共用同一集合。
+# 实体类型白名单:read 的 --kind 共用此集合(原 search 的 --type 已删除)。
 # ⚠️ 第三个值是 `question` 而**不是上游协议里的 `answer`**(决策 D5):上游
 # `entity-type` 仍是 "Answer",映射点**只在 `_norm_item` 一处**(见 _upstream)。
 # 此集合之外任何地方出现 "answer" 都是未映射的上游原始值泄漏。
-ENTITY_KINDS = ("knowledge", "question", "article")
+#
+# ⚠️ **第四个值是 `other`**(2026-09-29,工单 #32):收容 3 个已知值之外的每一种
+# 上游 `entity-type`(实测至少还有 `LearningCourse` / `LearningPath` /
+# `KnowledgeSpecial` / `LearningBroadcast`)。在此之前它们被 `_norm_item`
+# **静默丢弃** —— 搜「微课」得到 `total: 212` 而 `results` 只 2 条,且无任何错误信号。
+# ⚠️ `other` 是**合法 kind**(清单里会出现它,故 `read` 不能拿它当非法值),
+# 但它的全文端点**不存在**(上游各类型的详情端点形状不一,`LearningPath` 无端点、
+# `LearningBroadcast` 在第三方域),故 `read(kind="other")` 须给出**准确**的提示,
+# 而不是让调用方以为自己传错了 kind。
+ENTITY_KINDS = ("knowledge", "question", "article", "other")
 
-# 包内数据文件:拆解规则/预算/限速档(语料可配置;上游迁移时随包走)。
-_ROUTE_CFG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "query_routes.json")
-_ROUTE_CFG = None
-
-# 对外契约声明(单行来源,决策 D13):清单字段集 / 禁止键 / 产品线编号表。
-# 与 query_routes.json 同目录 —— 随包安装,装到用户机器上也能读到(测试/文档目录
-# 装过去就没有)。读取失败回落空表,**不抛错**(与 _route_cfg 同纪律):声明缺失
-# 时内核继续用内置兜底键集,不让"少一个数据文件"炸掉检索主链路。
+# 对外契约声明(**包内唯一数据文件**,决策 D13):字段集 / 禁止键 / 产品线编号表 /
+# 内核运行参数(limits)。随包安装,装到用户机器上也能读到(测试/文档目录装过去
+# 就没有)。读取失败回落内置兜底,**不抛错**:声明缺失时内核继续用兜底键集,
+# 不让"少一个数据文件"炸掉检索主链路。
 _CONTRACT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "contract.json")
 _CONTRACT = None
+# 声明是否真的读到。None = 还没读过(首次读取时确定);读失败 → False。
+# 消费者见 `contract_loaded()`(ADR-0016 决策 7)。
+_CONTRACT_OK = None
 
 # 上游 text 参数硬上限:100 原始字符(含标点/空格/换行,均计 1)。
 # 超限返回 HTTP 200 + {"errorCode":409,...},body 无 totalElements ——
@@ -61,66 +93,160 @@ def log(*a):
         pass
 
 
-def _route_cfg():
-    """拆解规则/预算/限速配置(数据文件在包内,沉淀词表只改 query_routes.json)。"""
-    global _ROUTE_CFG
-    if _ROUTE_CFG is None:
-        try:
-            with open(_ROUTE_CFG_PATH, encoding="utf-8") as f:
-                _ROUTE_CFG = json.load(f)
-        except Exception as e:
-            log("query_routes.json load fail:", str(e)[:120])
-            _ROUTE_CFG = {}
-    return _ROUTE_CFG
-
-
-def cfg_max_routes():
-    """计划路数上限(默认 7)。配置缺失时用兜底值,不抛错。"""
-    return int(_route_cfg().get("maxRoutes") or 7)
-
-
 def _contract():
-    """对外契约声明(清单字段集 / 禁止键 / 产品线编号表)。读失败回落空表。"""
-    global _CONTRACT
+    """对外契约声明(字段集 / 禁止键 / 产品线编号表 / 内核运行参数)。读失败回落空表。
+
+    ⚠️ 读失败**不只是日志**(ADR-0016 决策 7,v6.6 审查补):回落空表会让链接政策
+    回落"全部不给链接" → 全部 url 静默变 null,而调用方无从分辨"官方这些条目没有
+    链接"与"内核没读到声明"。故把读状态记在 `_CONTRACT_OK` 上,由
+    `contract_loaded()` 供返回体标注(`contractCfgLoaded`)。
+    """
+    global _CONTRACT, _CONTRACT_OK
     if _CONTRACT is None:
         try:
             with open(_CONTRACT_PATH, encoding="utf-8") as f:
                 _CONTRACT = json.load(f)
+            _CONTRACT_OK = True
         except Exception as e:
             log("contract.json load fail:", str(e)[:120])
             _CONTRACT = {}
+            _CONTRACT_OK = False
     return _CONTRACT
+
+
+def contract_loaded():
+    """声明是否**真的读到**(读失败时 False)。
+
+    消费者:顶层 `contractCfgLoaded`(ADR-0016 决策 7)。不要拿"字段集非空"代替它
+    ——`_contract()` 读失败会回落空表,而各处读取又都各自回落内置兜底值,于是
+    "读失败"与"读到了但内容恰好一样"在字段层面不可区分。
+    """
+    _contract()  # 触发一次读取,确保状态是当前的
+    # ⚠️ 测试会直接给 `_CONTRACT` 赋值做注入(那时代码路径上"声明"是存在的),
+    # 故 `_CONTRACT_OK is None`(从未走过读盘)按"已加载"处理 —— 否则注入型用例
+    # 会让这个键变 False,把"测试注入"误报成"声明读失败"。
+    return bool(_CONTRACT_OK) if _CONTRACT_OK is not None else bool(_CONTRACT)
+
+
+def _limits():
+    """内核自己的运行参数(非对外契约)。读失败回落空表。"""
+    v = _contract().get("limits")
+    return v if isinstance(v, dict) else {}
+
+
+def max_keywords():
+    """单次 search 收词上限(默认 7)。
+
+    实测依据:7 个词 = 7 次上游请求 = 3.33 秒。超限行为见 `_search_manifest`:
+    **按调用方给的顺序取前 N 个**,并在返回体里写明 `keywordsDropped`。
+
+    ⚠️ 兜底值必须取自 `_FALLBACK_MAX_KEYWORDS`,**不得**在这里另写一个字面量
+    (v6.6 审查修):此前两处都写裸 `7`,而离线用例钉的是那个**常量** ——
+    于是"声明缺失时的兜底值"与"用例证明过的兜底值"是**两份**,改一处不会红。
+    CONTEXT.md:35 点名的同型病(「声明必须有消费者,否则'单一来源'是假的」)。
+    """
+    try:
+        v = _limits().get("maxKeywords")
+        return int(v) if v else _FALLBACK_MAX_KEYWORDS
+    except Exception:
+        return _FALLBACK_MAX_KEYWORDS
+
+
+def max_detail_knowledge():
+    """问答深读里**逐条详情展开**的条数上限(默认 5)。
+
+    ⚠️ **2026-09-29 新增声明**(工单 #30)。原先它是 `_question_detail` 的一个
+    默认值 5 的形参,而**全仓无任何调用方传值**、也不在任何声明里 ——
+    即"碰巧等于实测最大值"的魔数(实测 25 条帖子的回答数:中位 2、90 分位 4、最大 5,
+    正好卡在边界上,再多一条就会静默截断)。
+
+    同批**删掉**的另一个数字是翻页上限 `max_answer_pages=3`,它**永不可触发**
+    (10 个问答帖全 `totalPages=1`;要触发需单帖 >60 回答,实测 0 条)。
+
+    为什么把它收进声明而不是留着当形参默认值:项目自己的纪律是
+    「**声明必须有消费者,否则'单一来源'是假的**」(CONTEXT.md 契约声明条);
+    一个没有任何调用方、也不在声明里的数字,谁都不知道该不该改、改了会怎样。
+    """
+    try:
+        v = _limits().get("maxDetail")
+        return int(v) if v else _FALLBACK_MAX_DETAIL
+    except Exception:
+        return _FALLBACK_MAX_DETAIL
 
 
 # 清单条目的**内置兜底键集**:仅在 contract.json 缺失/无该段时生效。
 # 为什么留兜底而不是"声明缺失就报错":字段集是渲染细节,不是安全闸;
-# 为它中断检索等于让一个数据文件决定套件能否工作(query_routes.json 同纪律)。
-# ⚠️ 兜底集必须与 contract.json 的 resultKeys 保持一致 —— 由离线回归用例钉住
+# 为它中断检索等于让一个数据文件决定套件能否工作。
+# ⚠️ 兜底集必须与 contract.json 的字段声明保持一致 —— 由离线回归用例钉住
 # (它同时读两边,任一处漂移即红),不靠人工誊抄。
-_FALLBACK_RESULT_KEYS = ("type", "id", "title", "url", "hitRoutes", "routes", "snippet",
-                         "products", "adopted", "answersCount", "comments", "supports",
-                         "questionBody")
+_FALLBACK_COMMON_KEYS = ("type", "id", "title", "url", "snippet", "products",
+                         "comments", "hitRoutes", "routes")
+_FALLBACK_BY_TYPE_KEYS = {
+    "knowledge": (),
+    "question": ("adopted", "answersCount", "questionBody"),
+    "article": ("supports",),
+    # ⚠️ `other` 档(2026-09-29,工单 #32):见 `ENTITY_KINDS` 的论证。
+    # `upstreamType` 必须保留 —— 它是"这到底是什么"的唯一线索。
+    "other": ("upstreamType", "resourceType"),
+}
 _FALLBACK_FORBIDDEN_KEYS = ("contentText", "fusedScore", "chunks", "contentLen", "useful",
                             "views", "updatedAt", "questionId")
+_FALLBACK_MAX_KEYWORDS = 7
+_FALLBACK_BURST = 7
+_FALLBACK_MAX_DETAIL = 5
+_FALLBACK_TOP_KEYS = ("ok", "keywords", "total", "queries", "routesPlanned",
+                      "effectiveProductId", "results", "otherSkipped",
+                      "routeErrors", "keywordsDropped", "scanNote", "contractCfgLoaded",
+                      "stats")
+# `other` 档的**开关状态**:由 `_search_manifest` 的 `include_other` 形参控制,
+# 不经环境变量(与"删掉 KSEARCH_RATE 等隐式通路"的纪律一致)。
 
 
-def result_keys():
-    """清单条目允许出现的键集(从 contract.json 声明取)。"""
-    keys = ((_contract().get("search") or {}).get("resultKeys")
-            or list(_FALLBACK_RESULT_KEYS))
-    return tuple(str(k) for k in keys)
+def result_keys(kind=None):
+    """清单条目允许出现的键集(从 contract.json 声明取)。
+
+    `kind=None` → **公共键集**(三类恒可达的键);给 kind → 公共 + 该类型专属。
+    类型不适用的键**不会**出现在该类型条目上(ADR-0016 决策 6):"结构性不适用"
+    与"上游没给值"是两件事,混成 `null` 会让调用方分不清。故本函数是**白名单下界**
+    的来源,`_manifest_project` 按它拼键、缺值不产出。
+    """
+    s = _contract().get("search") or {}
+    common = s.get("resultKeysCommon") or list(_FALLBACK_COMMON_KEYS)
+    keys = [str(k) for k in common]
+    if kind is not None:
+        by = s.get("resultKeysByType")
+        by = by if isinstance(by, dict) else _FALLBACK_BY_TYPE_KEYS
+        extra = by.get(str(kind))
+        if extra is None:
+            extra = _FALLBACK_BY_TYPE_KEYS.get(str(kind)) or ()
+        keys += [str(k) for k in extra]
+    return tuple(keys)
 
 
 def result_forbidden_keys():
-    """清单条目**出现即 FAIL** 的历史残留键集(从 contract.json 声明取)。"""
+    """清单条目**出现即 FAIL** 的历史残留键集(从 contract.json 声明取)。
+
+    ⚠️ 保留声明是**刻意的**(ADR-0016 决策 8):它记着"这些键是刻意删掉的"
+    (contentText / fusedScore / questionId / views / updatedAt …),防后人顺手加回来。
+    但它是**文档记录**,不是运行期闸门——清单字段是白名单拼出来的,白名单外产不出键,
+    对生产输出断言"没出现禁键"是恒绿的重言式(T4 修掉的"回声与自回声比"同型)。
+    故生产路径不读它,只有回归用例读(作为一份可引用的记录)。
+    """
     keys = ((_contract().get("search") or {}).get("resultForbiddenKeys")
             or list(_FALLBACK_FORBIDDEN_KEYS))
     return tuple(str(k) for k in keys)
 
 
 def top_keys():
-    """search 顶层键集(从 contract.json 声明取)。"""
-    return tuple(str(k) for k in ((_contract().get("search") or {}).get("topKeys") or []))
+    """search 顶层键集(从 contract.json 声明取)。
+
+    ⚠️ **v6.6 起真的被生产代码读**(ADR-0016 决策 8):`_search_manifest` 的顶层字段
+    也照声明拼,与条目侧同构。此前它在生产路径**零调用**(实测 `rg` 仅剩定义与导出),
+    与 CONTEXT.md 的纪律直接冲突:**「声明必须有消费者,否则'单一来源'是假的」**
+    ——声明写了而没人读,等于文档多抄一份。
+    """
+    keys = ((_contract().get("search") or {}).get("topKeys") or list(_FALLBACK_TOP_KEYS))
+    return tuple(str(k) for k in keys)
 
 
 def link_policy():
@@ -131,7 +257,7 @@ def link_policy():
     而声明这一份谁也没看。现在它是**唯一真源**:文档指向它,回归用例对着它断言。
 
     读取失败回落"全部不给链接"——**保守方向**是少给一个链接(读者损失一次跳转),
-    而不是多给一个死链(读者以为资料不存在)。与 `_route_cfg` 同纪律:不抛错。
+    而不是多给一个死链(读者以为资料不存在)。与 `_contract` 同纪律:不抛错。
     """
     p = (_contract().get("linkPolicy") or {}).get("rule") or {}
     return {str(k): str(v) for k, v in p.items()} or {
@@ -168,90 +294,33 @@ def default_product_id():
     return 93 if v is None else int(v)
 
 
-def _cfg_budget_search_max():
-    """search 的上游请求硬上限默认档。
+def _burst_of(prof):
+    """档位 dict → **单次在飞请求上界**。本值是唯一来源,两个消费者共用。
 
-    语义:只出清单、不做深读。7 路 × 1 页 = 7 次基础请求,余量留给 type_ 的
-    每路独立跨页扫描(≤5 页/路)与重试,故默认 24(可在 query_routes.json
-    的 budget.maxUpstreamPerSearch 配置,或用 KSEARCH_SEARCH_BUDGET 覆盖)。
+    消费者(必须恒等,否则"并发上界取 burst"这句话是假的):
+      * `_RateLimiter.wait()` —— 限速器认定的一次突发允许量;
+      * `_burst()` —— `_detail` 的翻页并发上界。
+
+    ⚠️ **2026-09-29 修正(真实分叉已实测)**:此前两处**各写各的兜底** ——
+    `wait()` 写 `int(p.get("burst") or 1)`,而 `_burst()` 写
+    `int(... or _FALLBACK_BURST)`。于是**同一个档位 dict 在两条路径上得出不同答案**:
+      实测 `_CONTRACT = {"limits": {"rate": {"interactive": {}}}}`(档位存在但为空 dict)
+      → `profile()` 回落到 `{}`(空档位),此时 `_burst()` = **7**、`wait()` = **1**。
+    这使 `_FALLBACK_BURST` 成了**只在一条路径上生效的常量**,而另一条路径悄悄用 1
+    ——正是本仓「声明必须有消费者,否则'单一来源'是假的」点名的形态。
+    收成单一函数后:两处恒等,且 `_FALLBACK_BURST` 有了**共享的**消费者。
     """
-    v = os.environ.get("KSEARCH_SEARCH_BUDGET")
-    if v and str(v).isdigit():
-        return int(v)
-    cfg = _route_cfg()
-    b = (cfg.get("budget") or {}).get("maxUpstreamPerSearch")
-    if b:
-        return int(b)
-    # 兜底:7 路基础 + type_ 扫描余量(仅配置缺失时生效,有意保守)
-    return cfg_max_routes() * 2 + 10
-
-
-class _Budget:
-    """单次 search 的上游请求硬上限。
-
-    并发纪律(工单 #29):本类**全部**状态读写都在 `self._lock` 下进行。
-    `acquire()` 把"检查余量"与"占用名额"合并为一次原子操作,消除
-    check-then-act 竞态——若不原子,多个进入者可同时通过检查再各自自增,
-    实际请求数溢出,`max` 就不再是硬上限。
-    ⚠️ 归因更正(2026-09-27):本注释原写"深读路径经 ThreadPoolExecutor 并发进入",
-    但 `ThreadPoolExecutor` 随 `ask` 一并下线,全仓已无任何线程池
-    (`grep -rIn "ThreadPoolExecutor|concurrent" src/` 只剩注释本身)。
-    锁仍然是必要的:`_fetch_for_item` 等路径与调用方的并发调用仍会进入本类,
-    且"预算必须是硬上限"这一对外承诺不依赖某个特定并发实现而成立。
-    """
-
-    def __init__(self, max_upstream):
-        self._lock = threading.Lock()
-        # budget=0 是合法入参,语义为"零上游请求"(不是"未设限")。原写法
-        # `int(x or 0) or None` 把 0 折成 None,等于把"禁网"读成"无限"——既是
-        # 参数语义错,也直接击穿"budget 是硬上限"的对外承诺(见工单 #29)。
-        # 只有 None / 空值才视为未设限。
-        self.max = None if max_upstream is None else int(max_upstream)
-        self.used = 0
-        self.exhausted = False
-
-    def acquire(self):
-        """原子领取一个上游名额:有余量则占用并返回 True;耗尽则标记并抛 _BudgetExhausted。
-
-        检查与自增在同一临界区内完成,不可分割——这是工单 #29 的核心修复点。
-        """
-        with self._lock:
-            if self.max is not None and self.used >= self.max:
-                self.exhausted = True
-                raise _BudgetExhausted()
-            self.used += 1
-            return True
-
-    def remaining(self):
-        """持锁读余量(max 为 None 时视为无限)。用于编排层的"还剩多少"判断。"""
-        with self._lock:
-            if self.max is None:
-                return None
-            return max(0, self.max - self.used)
-
-    def mark_exhausted(self):
-        """持锁标记耗尽(供编排层在读余量后补记,保证标记不丢)。"""
-        with self._lock:
-            self.exhausted = True
-
-    def snapshot(self):
-        """持锁取 (used, max, exhausted) 一致性快照。"""
-        with self._lock:
-            return self.used, self.max, self.exhausted
-
-
-class _BudgetExhausted(Exception):
-    """预算耗尽信号:停止发起上游请求,返回已获资料。"""
+    return max(1, int(prof.get("burst") or _FALLBACK_BURST))
 
 
 class _RateLimiter:
     """上游限速(匿名链路):令牌桶实现,只对真实上游请求生效(_get_json 入口)。
 
-    配置里只有 interactive 一档。曾存在 background 档(1 req/s)与两条切档通路
-    (请求级 set_profile、环境变量 KSEARCH_RATE),两者均已删除:该档的唯一生产者
-    是已随去服务化删除的摄取/评测脚本,场景不存在。
-    公开签名 `rate=` 保留(对外契约);传入配置中不存在的档名时回落到保守默认,
-    不报错、不静默切档。
+    配置里只有 interactive 一档(v6.6 起配置源为 `contract.json` 的 `limits.rate`)。
+    曾存在 background 档(1 req/s)与两条切档通路(请求级 set_profile、环境变量
+    KSEARCH_RATE),两者均已删除:该档的唯一生产者是已随去服务化删除的摄取/评测脚本,
+    场景不存在。公开签名 `rate=` 保留(对外契约);传入配置中不存在的档名时回落到
+    保守默认,不报错、不静默切档。
     """
 
     def __init__(self):
@@ -259,7 +328,7 @@ class _RateLimiter:
         self._next = 0.0
 
     def profile(self, name=None):
-        cfg = _route_cfg().get("rate") or {}
+        cfg = _limits().get("rate") or {}
         wanted = str(name or "interactive").lower()
         p = cfg.get(wanted)
         if not isinstance(p, dict):
@@ -274,7 +343,9 @@ class _RateLimiter:
     def wait(self, name=None):
         pname, p = self.profile(name)
         rps = float(p.get("rps") or 2.5)
-        burst = max(1, int(p.get("burst") or 1))
+        # ⚠️ 走 `_burst_of` 单一来源(2026-09-29):此前这里写死 `or 1`,
+        # 与 `_burst()` 的 `or _FALLBACK_BURST` 分叉(空档位时 1 vs 7,实测)。
+        burst = _burst_of(p)
         j = p.get("jitterMs") or [0, 0]
         interval = 1.0 / rps
         with self._lock:
@@ -293,6 +364,26 @@ _RATE = _RateLimiter()
 def _rate_profile():
     """读当前限速档名(固定 interactive;切档通路已删除)。"""
     return _RATE.profile()[0]
+
+
+def _burst():
+    """当前档位的 `burst`(单次操作最大在飞请求数;声明 `limits.rate`)。
+
+    ⚠️ **消费者**(2026-09-29,code review H3):`_detail` 的翻页并发度上界。
+    翻页上限删除后,"上游说了算"的并发度会把单次 `read` 放大到 199 线程 / 200 请求
+    (实测 `totalPages=200`),而 ADR-0017 明标"10+ 路未实测、不应外推"。
+    故并发上界取本值 —— **与"单次操作最大请求数"对齐**,不自造第二个限速器
+    (`burst` 的定义本就如此:`maxKeywords=7` 是单次 search 的路数上限)。
+
+    ⚠️ **与限速器共用 `_burst_of` 单一来源**(2026-09-29 修正):本函数原先自带
+    一份 `or _FALLBACK_BURST`,与 `wait()` 里的 `or 1` **分叉**(空档位时 7 vs 1,
+    已实测)。这不是理论问题 —— 它让"并发上界取 burst"这句话在配置异常时不成立:
+    限速器按 1 限流,而翻页仍可放 7 路。收口后两条路径恒等。
+    """
+    try:
+        return _burst_of(_RATE.profile()[1])
+    except Exception:
+        return _FALLBACK_BURST
 
 
 # ---- 上游调用计数(每次调用取前后差值) ----
