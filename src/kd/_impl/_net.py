@@ -56,6 +56,16 @@ from ._errors import QueryTooLong, UpstreamError
 # 等本地文件错误。在本模块的真实路径上(`urlopen` 只发 https,不碰本地文件)它们
 # **不会出现**,故不为此收窄 —— 收窄会丢掉 `ssl.SSLError`/`TimeoutError` 等真实形态,
 # 得不偿失。若将来本模块引入本地文件读取,这条边界需要重新审视。
+# ⚠️ **由此带来的一处口径放宽,如实声明**(2026-09-29,对抗性核实指出):
+# `http.client.HTTPException` 也包含 **`InvalidURL`** —— 当**调用方传入的 id 畸形**
+# 时(实测 `qid='907\nX'` → `InvalidURL`),它会被归成 `upstream_error`(可重试的
+# 上游抖动),而严格说那是**输入问题**。选择接受这一放宽的理由:
+#   * 该形态下无可点网页形式可补救,而 `upstream_error` **行动方向正确**(重试);
+#   * 收窄它需要**逐子类白名单**(排除 `InvalidURL`),而 `HTTPException` 的子类
+#     在不同 Python 版本间可能增减 —— 白名单会随版本失效,风险大于收益。
+# ⚠️ 另一处对照:畸形 id 若含非 ASCII(实测 `qid='中文帖号'` → `UnicodeEncodeError`)
+# **不在**本元组里,会穿透成 `internal_error`。即**两类畸形输入的对外表现不一致** ——
+# 这是已知的不一致,**未修**(归入"输入校验"这一独立课题,不在本轮范围)。
 # 消费者:`_detail` 的**页级 catch** 与**外层 catch**(两处必须同源,否则又会出现
 # "某层认识这种失败、另一层不认识"的不对称 —— 那正是 High-1 的成因:
 # `_manifest` 的检索侧早就有 `except Exception` 兜底,而深读侧只认 `UpstreamError`)。

@@ -332,12 +332,18 @@ def _burst_of(prof):
     **零消费**。这是刻意的语义分层(不知道红线 → 最保守;知道档位但缺键 → 与
     `maxKeywords` 对齐的上界),但**必须写明**,否则又成了"自称覆盖、实际不覆盖"。
 
-    ⚠️ **非数值 burst 一律回落,不抛错**(2026-09-29,code review L1):`int("x")` 会抛
-    `ValueError` —— 而 `_burst()` 有 `except Exception` 兜底、`wait()` 没有,于是
-    同一个坏值在两条路径上前者静默回落 7、后者**炸掉整个 search/read**。
-    现改为在此处**就地归一**:声明里的坏值不该让检索主链路崩溃(与
-    `max_keywords` / `max_detail` 的 `try/except` 同口径),更不该两条路径两副面孔。
+    ⚠️ **非数值/非 dict 一律回落,不抛错**(2026-09-29,code review L1 + 对抗性核实 F3):
+    `int("x")` 会抛 `ValueError`,而 `prof` 本身若非 dict 则 `.get` 会抛 `AttributeError`
+    —— 而 `_burst()` 有 `except Exception` 兜底、`wait()` 没有,于是坏值在两条路径上
+    前者静默回落 7、后者**炸掉整个 search/read**。
+    现改为**就地归一**(先判类型,再容错转换):声明里的坏值不该让检索主链路崩溃
+    (与 `max_keywords` / `max_detail` 的 `try/except` 同口径),更不该两副面孔。
+    ⚠️ **口径边界(勿夸大成"归一彻底")**:本函数只归一 **burst 这一个键**。
+    声明里 **`rps` / `jitterMs` 的坏值不在此处兜底** —— `wait()` 里的
+    `float(p.get("rps"))` 仍可能抛错。那是另一处(限速器的其余键),本轮未动,属已知边界。
     """
+    if not isinstance(prof, dict):
+        return _FALLBACK_BURST
     try:
         return max(1, int(prof.get("burst") or _FALLBACK_BURST))
     except (TypeError, ValueError):

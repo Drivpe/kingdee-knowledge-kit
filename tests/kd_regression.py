@@ -1511,6 +1511,39 @@ def t_truncated_enum():
        "完成先后泄漏进了结果。实测日志:%r" % (_log_txt.strip()[:300],))
     ok(_r4e2.get("answersTaken") == 5,
        "④e:两页失败时只剩首页 5 条,实为 %r" % (_r4e2.get("answersTaken"),))
+    # ④f **详情补全块**:某条失败时,**已完成**的展开写回不得丢。
+    # 治的病(2026-09-29,对抗性核实 F1):详情块 `for fut in as_completed(futs):
+    # det = _answer_brief(fut.result())` **无逐 future try** —— 一个 future 抛错即
+    # 打断收集循环,其余**已成功返回**的 future 其写回永不执行,答案停在列表摘要
+    # → **无任何标记的静默降级**(调用方看不出"这条本该有全文")。
+    # ⚠️ 原先的代码注释称"本块失败**不丢数据**"——**那是假声明**,本条把它钉成事实。
+    # 构造:两条详情,a2 快且失败、a1 慢(300ms)但**成功** —— 完成序与下标相反。
+    def _mk_expand_race():
+        def _f(url, rate=None):
+            if "/answers?page=1" in url:
+                return {"content": [{"id": a, "description": "短"} for a in ("a1", "a2")],
+                        "totalPages": 1}
+            if "/api/answers/a1" in url:
+                _t.sleep(0.30)                     # 慢,但成功
+                return {"id": "a1", "description": "EXPANDED-A1-LONG-TEXT"}
+            if "/api/answers/a2" in url:
+                _t.sleep(0.01)                     # 快,且失败 → 先打断
+                raise core.UpstreamError(500, "a2-fail")
+            return {"title": "Q", "description": "问题正文", "answers": 2}
+        return _f
+    with inject(_mk_expand_race()):
+        _r4f = _detail_mod_obj._question_detail("909", max_detail=2)
+    _by_id = {a.get("id"): a for a in _r4f.get("answers") or []}
+    ok(_r4f.get("truncated") == "upstream_error",
+       "④f:详情块失败仍须置 'upstream_error',实为 %r" % (_r4f.get("truncated"),))
+    ok("EXPANDED" in str((_by_id.get("a1") or {}).get("contentText")),
+       "④f:**已成功返回的详情其展开写回不得丢失** —— a1 的详情在 a2(失败者)之后"
+       "才完成,原写法会在 a2 抛错时打断循环、让 a1 的写回永不执行,答案静默停在摘要。"
+       "实测 a1.contentText=%r(期望含 'EXPANDED')"
+       % ((_by_id.get("a1") or {}).get("contentText"),))
+    ok(len(_r4f.get("answers") or []) == 2,
+       "④f:详情块失败不得丢条目本身(两条都要在),实得 %d 条"
+       % (len(_r4f.get("answers") or []),))
     # 区分度钉子:两档必须是两个不同的值(否则本用例无法区分实现)。
     ok(r2.get("truncated") != r4.get("truncated"),
        "两种截断成因必须是不同的枚举值(旧布尔形态下二者同形,判定会失真)")
@@ -2565,10 +2598,23 @@ def t_fallback_burst_has_consumer_and_no_fork():
     # ②c **非数值 burst 不得炸主链路**(2026-09-29 补,code review L1):`int("x")` 会抛
     #     `ValueError`;若 `wait()` 那条路径不兜,一个坏声明值会**炸掉整个 search/read**,
     #     而 `_burst()` 却静默回落 —— 又是两副面孔。
-    ok(cfg_mod._burst_of({"burst": "not-a-number"}) == cp._FALLBACK_BURST,
-       "档位里 burst 是非数值时 `_burst_of` 应就地回落到 %r(不得抛 ValueError "
-       "炸掉检索主链路),实为 %r"
-       % (cp._FALLBACK_BURST, cfg_mod._burst_of({"burst": "not-a-number"})))
+    #     ⚠️ **本条的判据是"不抛错",不是"两条路径恒等"**(2026-09-29 对抗性核实 F3 更正):
+    #     原先的说明把它们混为一谈,而 `wait()` 走的是**声明里的原 dict**、
+    #     `_burst_of` 走的是**归一后的值**,故两者在坏值形态下**本就不必然同值** ——
+    #     这里能钉住的只有"坏值不炸主链路 + 落在同一个兜底值上"。
+    for _bad in ("not-a-number", None, [], {}):
+        ok(cfg_mod._burst_of({"burst": _bad}) == cp._FALLBACK_BURST,
+           "档位里 burst 为 %r 时 `_burst_of` 应就地回落到 %r(不得抛 ValueError "
+           "炸掉检索主链路),实为 %r"
+           % (_bad, cp._FALLBACK_BURST, cfg_mod._burst_of({"burst": _bad})))
+    # ②d **prof 本身非 dict 也必须回落**(2026-09-29 对抗性核实 F3):`.get` 会抛
+    #     `AttributeError`,而 docstring 声称"非数值/非 dict 一律回落,不抛错" ——
+    #     这条把该声称钉成事实。可达路径:外部直接把坏 prof 喂进来
+    #     (`_RateLimiter.wait()` 内部不可达,那里已保证 p 是 dict)。
+    for _bad_prof in (None, "x", 5, [1, 2]):
+        ok(cfg_mod._burst_of(_bad_prof) == cp._FALLBACK_BURST,
+           "prof 本身非 dict(%r)时 `_burst_of` 应回落到 %r(不得抛 AttributeError),"
+           "实为 %r" % (_bad_prof, cp._FALLBACK_BURST, cfg_mod._burst_of(_bad_prof)))
 
     # ③ 兜底值本身不能被顺手改小(它与 maxKeywords 对齐是刻意的)。
     ok(cp._FALLBACK_BURST == 7,

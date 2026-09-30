@@ -243,25 +243,39 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                 truncated = "answer_limit"
             # 逐条详情并发取(最多 max_detail 条)。⚠️ **按下标写回**:每个 future
             # 只改自己那一条,顺序由列表下标固定,与完成先后无关。
-            # ⚠️ **已知精度边界(2026-09-29,code review 残余风险;刻意不改)**:
-            # `truncated` 是**单值枚举**,两个成因无法并存 —— 若本块抛上游故障,
-            # 外层 `except` 会把它置成 `"upstream_error"`,**覆盖**上面刚置的
-            # `"answer_limit"`(同时发生两类截断时只留其一)。
-            # 不在此处"修"的理由:让两者并存需要**改对外契约**(新增第二个字段),
-            # 而本轮的定位是台账校正,不夹带契约变更(与 M-1 同判:那是契约演进,不是缺陷)。
-            # 本块失败**不丢数据**(详情是就地写回同一对象,故只影响标记精度)。
+            # ⚠️ **逐 future 记账,一个失败不打断其余写回**(2026-09-29,对抗性核实 F1):
+            # 原写法 `for fut in as_completed(futs): det = _answer_brief(fut.result())`
+            # **无逐 future try** —— 一个 future 抛错立刻打断收集循环,其余**已成功返回**
+            # 的 future 其写回**永不执行**,答案对象停在列表摘要 → **无任何标记的静默降级**
+            # (调用方看不出"这条本该有全文")。实测:两条详情,a2 先失败、a1 慢但已成功返回
+            # → a1 的 `contentText` 停在摘要 `'短'` 而非展开文本。
+            # ⚠️ **本块与页级循环同口径**:失败按**下标**记账并 `continue`,收齐后取
+            # **最小下标**重抛(确定性,不随线程调度漂移)。这与页级块是同一条纪律 ——
+            # 原先只修了页级、漏了本块,正是"同一病在两处、只治一处"。
+            # ⚠️ **已知精度边界(刻意不改)**:`truncated` 是**单值枚举**,两个成因无法
+            # 并存 —— 本块抛上游故障时,外层 `except` 会把 `"upstream_error"` **覆盖**
+            # 掉上面刚置的 `"answer_limit"`。让两者并存需要**改对外契约**(新增字段),
+            # 本轮定位是台账校正,不夹带契约变更(与 M-1 同判:契约演进,不是缺陷)。
             targets = answers[:max(max_detail, 0)]
             if targets:
+                det_failed = {}
                 with ThreadPoolExecutor(max_workers=len(targets)) as pool:
                     futs = {pool.submit(_net._get_json, VIP + "/api/answers/" + a["id"],
-                                        rate): a for a in targets}
+                                        rate): i for i, a in enumerate(targets)}
                     for fut in as_completed(futs):
-                        a = futs[fut]          # 直接拿到该元素本身(列表里同一个对象)
-                        det = _answer_brief(fut.result())
+                        i = futs[fut]          # 下标:写回定位与失败记账都用它
+                        try:
+                            det = _answer_brief(fut.result())
+                        except _net.UPSTREAM_FAILURES as e:
+                            det_failed[i] = e
+                            continue
+                        a = targets[i]         # 列表里同一个对象,就地写回
                         if len(det.get("contentText") or "") > len(a.get("contentText") or ""):
                             a["contentText"] = det["contentText"]
                         if det.get("discussion"):
                             a["discussion"] = det["discussion"]
+                if det_failed:
+                    raise det_failed[min(det_failed)]
         except _net.UPSTREAM_FAILURES as e:
             # ③ 上游故障:与"资料就这么多"是两件事——调用方该重试,不该接受现状。
             # ⚠️ **本 catch 覆盖"上游故障"整类,不只是 `UpstreamError`**(2026-09-29,
