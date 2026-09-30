@@ -26,11 +26,15 @@ HDRS = {"User-Agent": UA, "Accept": "application/json"}
 # ---- 单一真源(守卫/回归钉住,勿在别处复制字面量) ----
 # 版本号:pyproject.toml 的 version 与此处一致(6.6.0 = 6.6 的三段写法),
 # __init__.__version__ 与 cli._VERSION 均从此处取。
-# 6.8 = 台账校正轮收尾(2026-09-29,**含行为修复**):并发翻页的**已完成页不再被丢弃**
-#       (首次修复只保住首页;实测同构造下 HEAD 保 8 条、修前得 5 条、修后得 8 条)、
-#       `_FALLBACK_BURST` 收成共享单一来源并消除与限速器的静默分叉(空档位时 7 vs 1)、
-#       删 `_URL_OF["other"]` 死键、删回归套件两个绕道 helper(工单 #33 项三 3.2 收口)、
-#       文档一致性钉子纳入 `CONTEXT.md`(此前它漂移出相反口径而无人抓)。
+# 6.8 = 台账校正轮收尾(2026-09-29,**含行为修复**):
+#       ① **上游故障时已取回的结果不再被丢弃**(口径限定:针对**上游故障**整类 ——
+#         网络不可达/超时/响应非 JSON/上游业务错误壳;程序缺陷仍穿透为内部错误)。
+#         6.7 的首次修复只保住首页(实测同构造 HEAD 保 8 条、6.7 得 5 条、修后 8 条);
+#         深读侧的失败分类与检索侧统一为单一来源(`_net.UPSTREAM_FAILURES`)。
+#       ② 频率档位的兜底值收成共享单一来源,消除与限速器的静默分叉(档位为空 dict 时
+#         `_burst()` 得 7 而 `wait()` 用 1);
+#       ③ 删除一处无消费者的链接模板(声明必须有消费者);④ 删除回归套件两个绕道取值函数
+#         (工单 #33 项三 3.2 收口);⑤ 文档一致性钉子纳入 `CONTEXT.md`。
 #       ⚠️ 对外契约**未变**(顶层键集/字段集/linkPolicy 均不动),故非破坏性变更;
 #       抬版本的理由是"实现行为有实质修复",而非契约变更。
 # 6.7 = 内核行为出入修复与交互提速(ADR-0017,**破坏性变更**):顶层删 `routesDegraded`
@@ -294,6 +298,19 @@ def default_product_id():
     return 93 if v is None else int(v)
 
 
+# ---- 「整份声明读不到」时的**保守默认档位** ----
+# ⚠️ 与 `_FALLBACK_BURST` 是**两个不同的概念**,不得混为一谈(2026-09-29,code review M-2):
+#   * `_CONSERVATIVE_RATE`(本常量)—— 声明**整份读不到**时的档位。它刻意取 burst=1,
+#     含义是"我们不知道红线,故按最保守的 1 处理"。
+#   * `_FALLBACK_BURST` —— **档位存在但缺 burst 键**时的回落值(见 `_burst_of`)。
+# 两者的适用路径**互不重叠**:声明整份读不到 → 走本常量(得 1),
+# 此时 `_FALLBACK_BURST` **不会**生效。原先把 `{"burst": 1, ...}` 直接写在这里,
+# 而 `_burst_of` 的 docstring 与钉子写成"共享单一来源"的通则 —— 那是**夸大了**
+# `_FALLBACK_BURST` 的适用范围(它只覆盖"缺键"这一形态,不覆盖"整份读不到")。
+# 抽成常量是为了让这条边界**可被引用与断言**,而不是散落的字面量。
+_CONSERVATIVE_RATE = {"burst": 1, "rps": 1.0, "jitterMs": [0, 120]}
+
+
 def _burst_of(prof):
     """档位 dict → **单次在飞请求上界**。本值是唯一来源,两个消费者共用。
 
@@ -306,11 +323,25 @@ def _burst_of(prof):
     `int(... or _FALLBACK_BURST)`。于是**同一个档位 dict 在两条路径上得出不同答案**:
       实测 `_CONTRACT = {"limits": {"rate": {"interactive": {}}}}`(档位存在但为空 dict)
       → `profile()` 回落到 `{}`(空档位),此时 `_burst()` = **7**、`wait()` = **1**。
-    这使 `_FALLBACK_BURST` 成了**只在一条路径上生效的常量**,而另一条路径悄悄用 1
-    ——正是本仓「声明必须有消费者,否则'单一来源'是假的」点名的形态。
-    收成单一函数后:两处恒等,且 `_FALLBACK_BURST` 有了**共享的**消费者。
+    收成单一函数后两处恒等,且 `_FALLBACK_BURST` 有了**共享的**消费者。
+
+    ⚠️ **适用范围(精确边界,勿夸大;2026-09-29 code review M-2)**:本函数只在
+    **"档位 dict 存在但 burst 键缺失/为假值/非数值"**这一形态下用 `_FALLBACK_BURST`。
+    **声明整份读不到**时走的是 `_CONSERVATIVE_RATE`(burst=1),`profile()` 早已给出
+    burst=1,本函数的 `or` 分支**不会触发** —— 即 `_FALLBACK_BURST` 在那条路径上
+    **零消费**。这是刻意的语义分层(不知道红线 → 最保守;知道档位但缺键 → 与
+    `maxKeywords` 对齐的上界),但**必须写明**,否则又成了"自称覆盖、实际不覆盖"。
+
+    ⚠️ **非数值 burst 一律回落,不抛错**(2026-09-29,code review L1):`int("x")` 会抛
+    `ValueError` —— 而 `_burst()` 有 `except Exception` 兜底、`wait()` 没有,于是
+    同一个坏值在两条路径上前者静默回落 7、后者**炸掉整个 search/read**。
+    现改为在此处**就地归一**:声明里的坏值不该让检索主链路崩溃(与
+    `max_keywords` / `max_detail` 的 `try/except` 同口径),更不该两条路径两副面孔。
     """
-    return max(1, int(prof.get("burst") or _FALLBACK_BURST))
+    try:
+        return max(1, int(prof.get("burst") or _FALLBACK_BURST))
+    except (TypeError, ValueError):
+        return _FALLBACK_BURST
 
 
 class _RateLimiter:
@@ -337,7 +368,7 @@ class _RateLimiter:
             p = cfg.get("interactive")
             wanted = "interactive"
             if not isinstance(p, dict):
-                p = {"burst": 1, "rps": 1.0, "jitterMs": [0, 120]}
+                p = dict(_CONSERVATIVE_RATE)
         return wanted, p
 
     def wait(self, name=None):

@@ -42,9 +42,11 @@
 """
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(REPO, "src")
@@ -1409,6 +1411,106 @@ def t_truncated_enum():
        "其余已完成页随栈帧丢弃 —— 与 HEAD 串行版对照即知是真回归)" % (r4c.get("answersTaken"),))
     ok(ids4c == ["a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3"],
        "④c:保住的条目必须**按页号归位**(不得让完成先后决定回答顺序),实得 %r" % (ids4c,))
+    # ④d **真实上游故障形态**(不只 `UpstreamError`)下同样不得丢已取页(2026-09-29 补)。
+    # 治的病(code review High-1):④b/④c 用的都是**受控的 `UpstreamError`** ——
+    # 而 `_net._get_json` 只把"HTTP 200 带 errorCode"包装成它;真实的
+    # `URLError`(不可达)/`socket.timeout`(20s 超时)/`JSONDecodeError`(非 JSON 响应)
+    # **直接穿透**,原先深读侧只 catch `UpstreamError` → 这些形态下已取回的 8 条
+    # **整包丢弃**且无日志、返 `internal_error`(实测 8→0,比 ④b 治的 0→5 更差)。
+    # ⚠️ 判据要点:**受控异常与真实网络异常必须同结果** —— 这正是"两侧不对称"的抓取点。
+    import http.client as _http_client
+
+    def _mk_race(exc):
+        def _f(url, rate=None):
+            if "?page=1" in url:
+                return {"content": [{"id": "a%d" % i} for i in range(1, 6)], "totalPages": 3}
+            if "page=2" in url:
+                _t.sleep(0.20)
+                return {"content": [{"id": "b%d" % i} for i in range(1, 4)], "totalPages": 3}
+            if "page=3" in url:
+                _t.sleep(0.01)
+                raise exc
+            return {"title": "Q", "description": "问题正文", "answers": 25}
+        return _f
+    for _label, _exc in (
+            ("urllib.error.URLError(不可达)", urllib.error.URLError("network down")),
+            ("socket.timeout(超时)", socket.timeout("timed out")),
+            ("json.JSONDecodeError(响应非 JSON)", json.JSONDecodeError("bad", "doc", 0)),
+            # ⚠️ **HTTP 协议层故障不是 `OSError` 子类**(2026-09-29 补,分类边界):
+            # 实测 `isinstance(http.client.IncompleteRead(b"x"), OSError)` → **False**。
+            # 它在 `urlopen` + `r.read()` 路径上会真实发生(响应体读到一半连接断),
+            # 若只收 `OSError` 就会漏掉 —— 故此条是**分类完整性的钉子**。
+            ("http.client.IncompleteRead(响应体截断)", _http_client.IncompleteRead(b"x")),
+            ("http.client.BadStatusLine(状态行非法)", _http_client.BadStatusLine("bad"))):
+        with inject(_mk_race(_exc)):
+            _r = _detail_mod_obj._question_detail("907", max_detail=0)
+        ok(_r.get("truncated") == "upstream_error",
+           "④d:%s 属**上游故障**,应置 'upstream_error'(与 answer_limit 区分),实为 %r"
+           % (_label, _r.get("truncated")))
+        ok(_r.get("answersTaken") == 8,
+           "④d:**%s 下已取回的 8 条不得被丢弃** —— 真实网络故障与受控 "
+           "`UpstreamError` 必须同等对待(原先深读侧只 catch `UpstreamError`,"
+           "这类形态会把已取页整包丢掉并返 internal_error)。实测 answersTaken=%r,ids=%r"
+           % (_label, _r.get("answersTaken"),
+              [a.get("id") for a in _r.get("answers") or []]))
+    # ⚠️ **反面**:程序缺陷**必须**继续穿透 —— 不得被"上游故障"分类吞掉。
+    # 若有人把 `except _net.UPSTREAM_FAILURES` 放宽成裸 `except Exception`,
+    # 本条会红:那等于把"我们写错了"伪装成"上游抖了",与本仓禁忌同型。
+    with inject(_mk_race(AttributeError("our own bug"))):
+        _raised = None
+        try:
+            _detail_mod_obj._question_detail("907", max_detail=0)
+        except AttributeError as _e:
+            _raised = _e
+        except Exception as _e:                                  # noqa: BLE001
+            _raised = _e
+        ok(isinstance(_raised, AttributeError),
+           "④d:程序缺陷(AttributeError)必须**响亮穿透**成 internal_error,"
+           "不得被上游故障分类吞成 'upstream_error' —— 否则"
+           "「我们写错了」会被伪装成「上游抖了」,实得 %r" % (_raised,))
+    # 区分度钉子:两档必须是两个不同的值(否则本用例无法区分实现)。
+    # ④e **失败页号不得取决于线程调度**(2026-09-29 补,code review M-1)。
+    # 治的病:原先只留"第一个异常",而"第一个"取的是 `as_completed` 的**完成序**
+    # —— 同一输入下哪一页被报出去会随线程调度变化,等于**让完成先后泄漏进结果**
+    # (本仓明令禁止:见 `_manifest` 的路序纪律)。现改为按页号记 `failed_pages`
+    # 并报 `min(failed_pages)`,与调度无关。
+    # ⚠️ 判据做法:让**大页号先失败、小页号后失败**(完成序与页号相反),
+    # 断言最终报出的仍是**最小页号**那个 —— 若实现退回"留第一个完成者",本断言会红。
+    def _mk_two_fail():
+        def _f(url, rate=None):
+            if "?page=1" in url:
+                return {"content": [{"id": "a%d" % i} for i in range(1, 6)], "totalPages": 4}
+            if "page=2" in url:          # 小页号,**后**失败(慢)
+                _t.sleep(0.30)
+                raise core.UpstreamError(500, "page2-late")
+            if "page=3" in url:          # 大页号,**先**失败(快)
+                _t.sleep(0.01)
+                raise core.UpstreamError(429, "page3-early")
+            return {"title": "Q", "description": "问题正文", "answers": 25}
+        return _f
+    with inject(_mk_two_fail()):
+        _r4e = _detail_mod_obj._question_detail("908", max_detail=0)
+    ok(_r4e.get("truncated") == "upstream_error",
+       "④e:多页失败时仍须置 'upstream_error',实为 %r" % (_r4e.get("truncated"),))
+    ok(_r4e.get("answersTaken") == 5,
+       "④e:两页失败时只剩首页 5 条(page2/3 均失败),实为 %r" % (_r4e.get("answersTaken"),))
+    # 关键:失败页号必须是**确定的最小页号**,与完成序无关。
+    # ⚠️ 判据打在**日志**上(`log()` 写 stderr):返回体里本来就没有"哪页失败"这个
+    # 字段(那需要改契约,本轮不做),故真正可观测的不变量是日志里的 `failedPages`。
+    # 期望:`failedPages=[2, 3]` —— 完成序是 3 先 2 后,而报告的是完整的页号集合。
+    import contextlib as _ctx
+    import io as _io
+    _buf = _io.StringIO()
+    with inject(_mk_two_fail()):
+        with _ctx.redirect_stderr(_buf):
+            _r4e2 = _detail_mod_obj._question_detail("908", max_detail=0)
+    _log_txt = _buf.getvalue()
+    ok("failedPages=[2, 3]" in _log_txt,
+       "④e:日志必须报出**完整的失败页号集合**(按页号排序,与完成先后无关)。"
+       "完成序是 page3 先、page2 后,故这里若出现 `[3]` 或 `[3, 2]` 都说明"
+       "完成先后泄漏进了结果。实测日志:%r" % (_log_txt.strip()[:300],))
+    ok(_r4e2.get("answersTaken") == 5,
+       "④e:两页失败时只剩首页 5 条,实为 %r" % (_r4e2.get("answersTaken"),))
     # 区分度钉子:两档必须是两个不同的值(否则本用例无法区分实现)。
     ok(r2.get("truncated") != r4.get("truncated"),
        "两种截断成因必须是不同的枚举值(旧布尔形态下二者同形,判定会失真)")
@@ -2304,6 +2406,75 @@ def t_install_data_files():
        "PowerShell 5.1 会按 ANSI 解码导致乱码,且不报错" % (head,))
 
 
+@case("offline: 上游故障分类单一来源(边界够宽且不吞程序缺陷)")
+def t_upstream_failure_taxonomy():
+    """**`_net.UPSTREAM_FAILURES` 的分类边界钉子**(2026-09-29 补,code review High-1)。
+
+    治的病:深读侧原先只 `except UpstreamError`,而 `_net._get_json` 只把
+    "HTTP 200 带 errorCode"包装成它 —— 真实的网络故障形态**全部穿透**,
+    把已取回的回答整包丢弃并返 `internal_error`(实测 8 条 → 0 条)。
+
+    本条钉两件**方向相反**的事,缺一即红:
+      ① **够宽**:四类真实上游故障形态必须都被归入 ——
+         `UpstreamError`(上游假 200)、`OSError`(URLError/超时/连接重置/SSL)、
+         `json.JSONDecodeError`(响应非 JSON)、
+         `http.client.HTTPException`(**读响应体阶段**的协议故障)。
+         ⚠️ 第四类**不是 `OSError` 子类**(实测 `isinstance(IncompleteRead(...), OSError)`
+         → False),故必须单列 —— 漏了它,"连接中途断"这种最常见的抖动形态就会穿透。
+      ② **不吞程序缺陷**:`AttributeError`/`TypeError`/`KeyError`/`MemoryError`
+         必须**不在**元组里 —— 它们穿透成 `internal_error`("这是 bug 而非用法问题"),
+         不得伪装成"上游抖动"。若有人把元组放宽成裸 `Exception`,本条必红。
+    """
+    import http.client as _http_client
+    import ssl
+    net_mod = _net_mod()
+    tax = net_mod.UPSTREAM_FAILURES
+
+    # ① 够宽:真实上游故障形态逐一必须在列。
+    must_catch = [
+        ("UpstreamError(上游假 200)", core.UpstreamError(500, "shell")),
+        ("urllib.error.URLError(不可达)", urllib.error.URLError("x")),
+        ("urllib.error.HTTPError(4xx/5xx)", urllib.error.HTTPError("u", 500, "m", None, None)),
+        ("socket.timeout(超时)", socket.timeout("t")),
+        ("ConnectionResetError(连接重置)", ConnectionResetError("r")),
+        ("ssl.SSLError(TLS 失败)", ssl.SSLError("s")),
+        ("http.client.IncompleteRead(响应体截断)", _http_client.IncompleteRead(b"x")),
+        ("http.client.BadStatusLine(状态行非法)", _http_client.BadStatusLine("bad")),
+        ("json.JSONDecodeError(响应非 JSON)", json.JSONDecodeError("b", "d", 0)),
+    ]
+    for label, exc in must_catch:
+        ok(isinstance(exc, tax),
+           "① 上游故障分类漏了 %s —— 该形态会穿透并丢掉已取页(High-1 的成因)。"
+           "实测 `isinstance(%s, UPSTREAM_FAILURES)` → False" % (label, type(exc).__name__))
+
+    # ② 不吞程序缺陷:这些必须穿透。
+    must_pass = [
+        ("AttributeError", AttributeError("bug")),
+        ("TypeError", TypeError("bug")),
+        ("KeyError", KeyError("bug")),
+        ("MemoryError", MemoryError()),
+        ("RuntimeError", RuntimeError("bug")),
+    ]
+    for label, exc in must_pass:
+        ok(not isinstance(exc, tax),
+           "② %s 属**程序缺陷**,不得被上游故障分类吞掉 —— 否则「我们写错了」会被"
+           "伪装成「上游抖了」(与本仓禁忌同型)。实测已被吞" % label)
+
+    # ③ 分类元组必须是**具名单一来源**,且被两处 catch 共用(不是又抄两份)。
+    src_detail = open(os.path.join(SRC, "kd", "_impl", "_detail.py"), encoding="utf-8").read()
+    n_use = src_detail.count("_net.UPSTREAM_FAILURES")
+    ok(n_use >= 2,
+       "③ 深读侧只有 %d 处引用 `_net.UPSTREAM_FAILURES`(应 ≥2:页级 catch + 外层 catch)"
+       "—— 少于 2 处说明又出现「某层认识这种失败、另一层不认识」的不对称" % n_use)
+    ok("except UpstreamError" not in src_detail,
+       "③ 深读侧仍残留只认 `UpstreamError` 的 catch —— 那会让真实网络故障穿透,"
+       "正是 High-1 的原始形态")
+    # ④ 元组里不得出现裸 `Exception`/`BaseException`(会吞程序缺陷)。
+    ok(not any(x in (Exception, BaseException) for x in tax),
+       "④ 分类元组里出现了裸 `Exception`/`BaseException`: %r —— 那会把程序缺陷"
+       "一并吞成「上游故障」" % (tax,))
+
+
 @case("offline: 兜底 burst 有共享消费者且两条路径恒等(无静默分叉)")
 def t_fallback_burst_has_consumer_and_no_fork():
     """**`_FALLBACK_BURST` 的消费者钉子**(2026-09-29 补,交接欠账④-1)。
@@ -2366,6 +2537,38 @@ def t_fallback_burst_has_consumer_and_no_fork():
     ok(n_ref >= 3,
        "`_burst_of` 的引用点只有 %d 处(应 ≥3:定义 1 + 限速器 wait() 1 + `_burst()` 1)"
        "—— 引用不足说明它退回死常量" % n_ref)
+
+    # ②b **真实适用范围**(2026-09-29 补,code review M-2):上面 ① 只证明"档位 dict 层面
+    #     两路恒等",**不足以**宣称 `_FALLBACK_BURST` 在所有形态下都被消费 ——
+    #     精确边界是:**整份声明读不到**时走的是 `_CONSERVATIVE_RATE`(burst=1),
+    #     `_FALLBACK_BURST` 在那条路径上**零消费**。此处把两条路径的边界钉成事实,
+    #     免得后人(或注释)把它写成覆盖一切的通则 —— 本仓把"自称覆盖、实际不覆盖"
+    #     当作与"注释与代码相反"同级的病。
+    cfg_mod._CONTRACT = {}                                # 整份声明读不到
+    try:
+        _pname, _prof = cfg_mod._RATE.profile()
+        ok(_prof.get("burst") == 1,
+           "声明整份读不到时应走**保守默认** burst=1(不知道红线 → 最保守),实为 %r"
+           % (_prof.get("burst"),))
+        ok(cfg_mod._burst_of(_prof) == 1,
+           "该形态下 `_burst_of` 应返回保守默认 1 —— 若返回 7,说明 `_FALLBACK_BURST` "
+           "被误当成覆盖一切的通则(它只覆盖'档位在但缺键'),实为 %r"
+           % (cfg_mod._burst_of(_prof),))
+        ok(cfg_mod._burst() == 1,
+           "该形态下 `_burst()` 也应为 1(两条路径口径一致),实为 %r" % (cfg_mod._burst(),))
+    finally:
+        cfg_mod._CONTRACT = real
+    # 而"档位在但缺 burst 键"才是 `_FALLBACK_BURST` 的适用形态(与上一条互补)。
+    ok(cfg_mod._burst_of({}) == cp._FALLBACK_BURST,
+       "`_FALLBACK_BURST` 的适用形态是'档位 dict 在、burst 键缺',此时应返回 %r"
+       % (cp._FALLBACK_BURST,))
+    # ②c **非数值 burst 不得炸主链路**(2026-09-29 补,code review L1):`int("x")` 会抛
+    #     `ValueError`;若 `wait()` 那条路径不兜,一个坏声明值会**炸掉整个 search/read**,
+    #     而 `_burst()` 却静默回落 —— 又是两副面孔。
+    ok(cfg_mod._burst_of({"burst": "not-a-number"}) == cp._FALLBACK_BURST,
+       "档位里 burst 是非数值时 `_burst_of` 应就地回落到 %r(不得抛 ValueError "
+       "炸掉检索主链路),实为 %r"
+       % (cp._FALLBACK_BURST, cfg_mod._burst_of({"burst": "not-a-number"})))
 
     # ③ 兜底值本身不能被顺手改小(它与 maxKeywords 对齐是刻意的)。
     ok(cp._FALLBACK_BURST == 7,

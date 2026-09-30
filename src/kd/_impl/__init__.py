@@ -20,6 +20,9 @@
   _errors    三个对外异常类(类对象身份被 kd.core 复用)
   _config    单一真源常量、契约声明(contract.json)、限速、上游计数、log
   _net       上游 HTTP 出口(_get_json)、检索词硬闸(clamp_query)
+             「什么算上游故障」的**单一分类来源**(UPSTREAM_FAILURES:2026-09-29 新增,
+             code review High-1)。检索侧与深读侧的失败隔离共用它,避免"某一层认识
+             这种失败、另一层不认识"的不对称。
              ⚠️ **本模块的 `_get_json` 是全内核唯一的网络出口**(2026-09-29 更正:
              原文说这个位置属于 `_search_upstream`,**那句是错的** —— 深读侧 5 个
              调用完全不经过它)。调用方一律属性访问(`_net._get_json`),不得快照
@@ -87,7 +90,7 @@ from ._config import (  # noqa: F401
     result_keys,
     top_keys,
 )
-from ._net import _get_json, clamp_query  # noqa: F401
+from ._net import UPSTREAM_FAILURES, _get_json, clamp_query  # noqa: F401
 from ._text import _is_true, _title_of, html2text  # noqa: F401
 from ._upstream import _URL_OF, _norm_item, _search_upstream  # noqa: F401
 from ._routes import _dedupe_routes, _plan_routes, _stamp_product  # noqa: F401

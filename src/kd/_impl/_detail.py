@@ -119,6 +119,9 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
         # 两类成因分开记(见 docstring 的枚举表)。
         truncated = None
         answers, total_pages = [], None
+        # ⚠️ 在 `try` **外**初始化:外层的 `except` 要用它报"失败规模",
+        # 而它由翻页块内的页级 catch 填充(作用域必须覆盖两处)。
+        failed_pages = {}
         try:
             # ---- 翻页:先取第 1 页,再决定还剩几页(ADR-0017 决策 4) ----
             # ⚠️ 不能"把页号全并发出去":`totalPages` 只有第 1 页的响应里才有。
@@ -162,7 +165,13 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                 # 现改为:失败只**记录不中断**,收齐后按页号归位,最后再抛
                 # —— 异常路径因此也能保住已完成页;`sorted(ordered)` 保证完成先后
                 # 仍不决定回答顺序(与路由并发同一条纪律)。
-                ordered, first_exc = {}, None
+                # ⚠️ **口径限定(2026-09-29,code review High-1 收口后)**:上述保证
+                # 针对的是**上游故障**整类(见 `_net.UPSTREAM_FAILURES`:
+                # `UpstreamError` + `OSError`(URLError/超时) + `JSONDecodeError`)。
+                # **程序缺陷**(AttributeError/TypeError 等)刻意不在该元组里,
+                # 仍会穿透成 `internal_error` —— 那时函数**不返回结果**,
+                # 故"不丢已取页"这句话对其无意义(不是它的适用范围)。
+                ordered = {}
                 try:
                     with ThreadPoolExecutor(max_workers=workers) as pool:
                         futs = {pool.submit(
@@ -175,15 +184,28 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                         # 连同 `rest` 一起随栈帧丢弃。实测(同构造:page1=5、page2=3、page3 抛错
                         # 且最先完成):首版与"只用 `finally` 归位"的中间版都只得 5 条,而 HEAD 串行版
                         # 保住 8 条 —— 说明**打断收集循环**才是丢页的主因(光挪归位时机不够)。
-                        # 现改为:失败只记下**第一个**异常并继续收集,成功的页全部落进 `ordered`;
-                        # 收集完毕后再抛出,交外层 `except` 置 `upstream_error`。
+                        # 现改为:失败按**页号**记进 `failed` 并继续收集,成功的页全部落进
+                        # `ordered`;收集完毕后再抛出,交外层 `except` 置 `upstream_error`。
                         for fut in as_completed(futs):
                             p = futs[fut]
                             try:
                                 ad = fut.result()
-                            except UpstreamError as e:
-                                if first_exc is None:
-                                    first_exc = e
+                            except _net.UPSTREAM_FAILURES as e:
+                                # ⚠️ **catch 的是"上游故障"整类,不是只看 `UpstreamError`**
+                                # (2026-09-29,code review High-1):`_net._get_json` 只把
+                                # "HTTP 200 带 errorCode"包装成 `UpstreamError`;真实的
+                                # 网络抖动(`URLError`/`socket.timeout`)与"响应非 JSON"
+                                # **直接穿透**。原先此处只 catch `UpstreamError`,于是那些
+                                # 形态下本循环被打断、已取页随栈帧丢弃 —— 而检索侧
+                                # (`_manifest.py:386`)早有 `except Exception` 兜底,两侧不对称。
+                                # 现与检索侧同口径(共用 `_net.UPSTREAM_FAILURES`)。
+                                # ⚠️ **按页号记账,不按完成顺序**(2026-09-29,code review M-1):
+                                # 原先只留"第一个异常",而"第一个"取的是 `as_completed` 的
+                                # 完成序 —— 哪一页被报出去取决于线程调度,等于**让完成先后
+                                # 泄漏进结果**(本仓明令禁止:见 `_manifest` 的路序纪律)。
+                                # 改为记 `{页号: 异常}`,报告时取**最小页号**那个 —— 确定、
+                                # 可复现,与调度无关。
+                                failed_pages[p] = e
                                 continue
                             ordered[p] = [_answer_brief(a) for a in (ad.get("content") or [])]
                             # ⚠️ 原为 `total_pages = max(total_pages, ad.get("totalPages") or 1)`
@@ -192,16 +214,25 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                             # 已删除(2026-09-29,code review H4)。
                 finally:
                     # ⚠️ **归位写在 `finally` 里,而不是只写在正常路径上**(2026-09-29):
-                    # 本函数只把 `UpstreamError` 当"上游故障"处理;若某页抛**其它**异常
-                    # (如解析类错误),它会一路穿透 —— 此时若归位只写在正常路径,
-                    # 已收集的页就跟着栈帧一起丢。而穿透场景下函数**本就不返回结果**
-                    # (`out` 尚未构造),故这**不构成新的数据丢失面**;写在 `finally`
-                    # 纯属加固:让"已取即保留"这条不变量与异常类型无关。
+                    # 归位的对象是所有**已成功收集**的页(`ordered`)。它写在 `finally`
+                    # 是为了让"已取即保留"这条不变量**不依赖哪条异常路径被走到** ——
+                    # 页级 catch 现在覆盖上游故障整类(见 `_net.UPSTREAM_FAILURES`),
+                    # 故此处在**上游故障**形态下总能保住已取页;
+                    # 若抛的是程序缺陷(刻意不在该元组里),函数本就不返回结果
+                    # (`out` 尚未构造),归位与否对调用方无差别。
                     # 就地 extend 到 `pages`(与 `answers` 同一对象),**不重新赋值**。
                     for p in sorted(ordered):
                         pages.extend(ordered[p])
-                if first_exc is not None:
-                    raise first_exc
+                if failed_pages:
+                    # ⚠️ **报告"最小页号"那个异常,并把失败规模一并记进日志**
+                    # (2026-09-29,code review M-1)。两件事在这里一并收口:
+                    #   ① **确定性**:`min(failed)` 只取决于页号,与线程调度无关
+                    #      —— 原先留的"第一个异常"取完成顺序,同一输入可能报不同的页;
+                    #   ② **失败规模可见**:`failedPages` 与页号列表进 stderr。
+                    #      ⚠️ 这**不是**给调用方的信号(那需要新增契约字段,本轮不做),
+                    #      只是让排查者能从日志分清"1 页失败"与"5 页全失败"——
+                    #      原先两者连日志都一模一样,属"用一处静默换另一处静默"的弱形态。
+                    raise failed_pages[min(failed_pages)]
             # ⚠️ `total_pages` 之后**不再被赋值**(原 `except` 分支里的
             # `total_pages = None` 也是死写,一并删除 —— 同上 H4)。
             # ⚠️ `answers` 已在首页处绑定同一个 `pages` 列表对象,此处**不得重新赋值** ——
@@ -212,6 +243,13 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                 truncated = "answer_limit"
             # 逐条详情并发取(最多 max_detail 条)。⚠️ **按下标写回**:每个 future
             # 只改自己那一条,顺序由列表下标固定,与完成先后无关。
+            # ⚠️ **已知精度边界(2026-09-29,code review 残余风险;刻意不改)**:
+            # `truncated` 是**单值枚举**,两个成因无法并存 —— 若本块抛上游故障,
+            # 外层 `except` 会把它置成 `"upstream_error"`,**覆盖**上面刚置的
+            # `"answer_limit"`(同时发生两类截断时只留其一)。
+            # 不在此处"修"的理由:让两者并存需要**改对外契约**(新增第二个字段),
+            # 而本轮的定位是台账校正,不夹带契约变更(与 M-1 同判:那是契约演进,不是缺陷)。
+            # 本块失败**不丢数据**(详情是就地写回同一对象,故只影响标记精度)。
             targets = answers[:max(max_detail, 0)]
             if targets:
                 with ThreadPoolExecutor(max_workers=len(targets)) as pool:
@@ -224,10 +262,29 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                             a["contentText"] = det["contentText"]
                         if det.get("discussion"):
                             a["discussion"] = det["discussion"]
-        except UpstreamError as e:
+        except _net.UPSTREAM_FAILURES as e:
             # ③ 上游故障:与"资料就这么多"是两件事——调用方该重试,不该接受现状。
-            log("UPSTREAM_ERR:", "route=question_detail qid=%s code=%s msg=%s"
-                % (qid, e.code, e.message))
+            # ⚠️ **本 catch 覆盖"上游故障"整类,不只是 `UpstreamError`**(2026-09-29,
+            # code review High-1 收口)。原先只 catch `UpstreamError`,于是:
+            #   * `URLError` / `socket.timeout`(真实网络抖动、20s 超时)
+            #   * `json.JSONDecodeError`(上游返回非 JSON:网关错误页、截断 body)
+            # 这两种**真实观测到**的形态会一路穿透到 `cli._guard` → `internal_error`,
+            # **把已取回的回答整包丢弃**(实测 8 条 → 0 条),且连 `UPSTREAM_ERR`
+            # 日志都没有 —— 比"首页被丢"更差,因为调用方拿到的是"内部错误",
+            # 会去查 bug 而不是重试。
+            # 现已与检索侧(`_manifest.py:386`)同口径:凡属上游故障,一律
+            # 置 `upstream_error` 并把**已取回的页交出去**(见 `pages` 的绑定说明)。
+            # 程序缺陷(AttributeError/TypeError 等)**刻意不在**本元组里,仍会响亮穿透。
+            code = getattr(e, "code", None)
+            # ⚠️ **日志带上"失败规模"与失败页号**(2026-09-29,code review M-1):
+            # 原先无论 1 页失败还是 5 页全失败,日志都只有一行、形态完全相同 ——
+            # 排查者看不出这次是"抖了一下"还是"基本没取到"。
+            # 页号列表取自 `failed_pages`(按页号,**与线程调度无关**)。
+            # ⚠️ 这**只改善日志**,对外返回体**未变** —— 让调用方也能分辨失败规模
+            # 需要新增契约字段(`failedPages` 之类),属契约演进,本轮刻意不做。
+            log("UPSTREAM_ERR:", "route=question_detail qid=%s code=%s failedPages=%s msg=%s"
+                % (qid, code, sorted(failed_pages) or "n/a",
+                   str(getattr(e, "message", "") or e)[:200]))
             # ⚠️ 原此处 `total_pages = None` 是**死写**(后面无读点),已删(工单 #30/H4)。
             truncated = "upstream_error"
         if truncated:

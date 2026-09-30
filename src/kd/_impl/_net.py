@@ -24,11 +24,43 @@
 不再收 `budget` 形参——限额领取原本是它的第一件事,现在整段消失。
 """
 import json
+import http.client
 import urllib.request
 
 from . import _config
 from ._config import HDRS, UPSTREAM_TEXT_MAX
 from ._errors import QueryTooLong, UpstreamError
+
+# ---- 「什么算上游故障」的**单一分类来源**(2026-09-29,code review High-1 收口) ----
+# 本仓库有两类失败混在一起,必须分开对待:
+#   * **上游故障** —— 上游侧的原因,调用方该**重试**;已取回的数据不得因它丢弃;
+#   * **程序缺陷** —— 我们自己的 bug(AttributeError/TypeError 等),应当**响亮地穿透**
+#     成 `internal_error`("这是 bug 而非用法问题"),**不得**被伪装成"上游抖动"。
+# 本元组只收前者,四态各自对应一种真实观测到的上游失败形态:
+#   ① `UpstreamError` —— 上游"假 200":HTTP 层成功而 body 带 `errorCode`(见下);
+#   ② `OSError`       —— 传输层:`URLError`(不可达/DNS/TLS)、`HTTPError`、
+#                        `TimeoutError`/`socket.timeout`(20s 超时)、
+#                        `ConnectionError`(`RemoteDisconnected`/`ConnectionReset`)、
+#                        `ssl.SSLError` —— 这些都是 `OSError` 的子类;
+#   ③ `json.JSONDecodeError` —— 响应不是合法 JSON(网关错误页、截断的 body);
+#   ④ `http.client.HTTPException` —— **读响应体阶段**的 HTTP 协议层故障。
+#      ⚠️ **这一类不是 `OSError` 子类**(它是 `Exception` 的直接子类),故**必须单列**:
+#      实测 `isinstance(http.client.IncompleteRead(b"x"), OSError)` → **False**。
+#      `IncompleteRead`(响应体读到一半连接断)与 `BadStatusLine`(状态行非法/为空)
+#      在 `urlopen` + `r.read()` 的路径上**会真实发生**,属典型网络抖动形态。
+#      (注:`RemoteDisconnected` 同时继承 `ConnectionResetError`,故已被 ② 覆盖;
+#       这里单列是为了覆盖 `IncompleteRead` / `BadStatusLine` 这两个漏网的。)
+# ⚠️ **刻意不用裸 `Exception`**:那会把程序缺陷一并吞成"上游故障" —— 那是把
+# "我们写错了"伪装成"上游抖了",与本仓禁忌同型。
+# ⚠️ **已知的过宽面(如实声明)**:`OSError` 也覆盖 `FileNotFoundError`/`PermissionError`
+# 等本地文件错误。在本模块的真实路径上(`urlopen` 只发 https,不碰本地文件)它们
+# **不会出现**,故不为此收窄 —— 收窄会丢掉 `ssl.SSLError`/`TimeoutError` 等真实形态,
+# 得不偿失。若将来本模块引入本地文件读取,这条边界需要重新审视。
+# 消费者:`_detail` 的**页级 catch** 与**外层 catch**(两处必须同源,否则又会出现
+# "某层认识这种失败、另一层不认识"的不对称 —— 那正是 High-1 的成因:
+# `_manifest` 的检索侧早就有 `except Exception` 兜底,而深读侧只认 `UpstreamError`)。
+UPSTREAM_FAILURES = (UpstreamError, OSError, json.JSONDecodeError,
+                     http.client.HTTPException)
 
 
 def clamp_query(text, limit=None, strict=False):
