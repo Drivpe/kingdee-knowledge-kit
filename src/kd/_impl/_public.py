@@ -6,9 +6,18 @@
 """
 import time
 
-from ._config import (ENTITY_KINDS, UPSTREAM_TEXT_MAX, VERSION, _up_now,
+# ⚠️ **`VERSION` 曾在此 import 并进 `__all__`** —— 是**死 import**:
+# 本模块代码零读点,而"版本单一真源"的两条链都不经过这里
+# (`kd.__version__` / `cli._VERSION` 走 `kd._impl.VERSION`,那份来自 `_config`)。
+# 2026-10-01 死 import 清理时删除 import 与 `__all__` 里那一项
+# (编号口径见 ADR-0018 末节:它**不是** ADR-0014 的 `D14`,那套编号指的是
+# "产品线字面推导删除";`.scratch/` 里那第二套编号已随该目录 gitignore 而不可解析)。
+# ⚠️ 同理删除 `_DETAIL_KINDS`:它决定 `read --kind` 的 choices,而那个消费者在
+# `_detail` / `cli`,本模块零读点(`read` 的类型校验走 `ENTITY_KINDS`)。
+from ._config import (ENTITY_KINDS, UPSTREAM_TEXT_MAX, _up_now,
                       default_product_id, log)
-from ._detail import _DETAIL_KINDS, _detail
+from ._detail import _detail
+from . import _detail as _detail_mod
 from ._errors import InternalError
 from ._manifest import _search_manifest, project_top
 from ._net import clamp_query
@@ -141,7 +150,7 @@ def search(keywords=None, product_id=_DEFAULT_PRODUCT_ID,
     # 「违规的不是说不,是**不说**」,故丢弃一律通报(下面把 blankDropped 交给编排层)。
     blanks = [k for k in keywords if not str(k).strip()]
     # 全是空白 = 没有词:`[""]` / `["  ", ""]` 在 `_plan_routes` 里会被逐个 strip 后跳过,
-    # 产出一条 **0 路的空清单**——结构合法、`ok:true`、`total:0`,调用方只会以为
+    # 产出一条 **0 路的空清单**——结构合法、`ok:true`、`results:[]`,调用方只会以为
     # "官方没这类文档"。这正是本项目最忌的静默失效(与"空 text"同类),故与
     # `not keywords` 同处理:显式报错,让调用方知道是**它没给词**,而不是官方没有资料。
     if len(blanks) == len(keywords):
@@ -161,7 +170,8 @@ def search(keywords=None, product_id=_DEFAULT_PRODUCT_ID,
     # 绑到局部变量 `stats` 后,日志与声明彻底解耦。
     log("SEARCH:", "kw×%d" % len(keywords),
         "| routes", len(res.get("queries") or []),
-        "| total", res.get("total"), "| returned", len(res.get("results") or []),
+        "| otherSkipped", res.get("otherSkipped"),
+        "| returned", len(res.get("results") or []),
         "| upstream", stats["upstreamCalls"])
     # ⚠️ `stats` 注入之后**再过一次声明投影**(ADR-0016 决策 8):`stats` 也是
     # `topKeys` 里的顶层键,若只在 `_search_manifest` 里投影,它就绕过了声明——
@@ -199,8 +209,20 @@ def read(kind, oid, rate=None):
     n0, t0 = _up_now(), time.time()
     d = _detail(kind, oid, rate=rate)
     d["stats"] = {"upstreamCalls": _up_now() - n0, "elapsedMs": round((time.time() - t0) * 1000, 1)}
+    # ⚠️ 日志必须在**投影之前**读 `contentText`(用 `.get`):投影后它可能已被声明删掉
+    # (那正是投影的目的),写 `d["contentText"]` 会把"删声明即删输出"变成一条崩溃路径
+    # ——与 search 侧日志行读 `stats` 的那次踩坑同型。
     log("READ[%s]:" % kind, oid, "| len", len(d.get("contentText") or ""))
-    return d
+    # ⚠️ `stats` 注入之后**再过一次声明投影**(2026-10-01,D12):`stats` 也是
+    # `read.topKeys` 里的键,而 `_detail` 的投影发生在注入**之前** —— 若只投影那一次,
+    # 从声明删 `stats` 而真实输出仍带着它,声明对这一个键就没有约束力。
+    # 与 `_public.search` 的两段式同构(那里是 `_search_manifest` 返回前一次 +
+    # 本函数注入 `stats` 之后一次)。
+    # ⚠️ 走 `_detail_mod.project_read` 的**属性访问**、而不是 import 期的名字快照:
+    # 快照拦不住"替换模块属性"的注入(本仓已踩过:`from ._net import _get_json` 那次,
+    # 见 `_detail.py` 顶部论证),而投影正是必须可注入的那一件 —— 回归用例要靠替换它
+    # 证明"声明即闸门",不是在测一句断言。
+    return _detail_mod.project_read(d, kind)
 
 
-__all__ = ["search", "read", "VERSION"]
+__all__ = ["search", "read"]

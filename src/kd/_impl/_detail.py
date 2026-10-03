@@ -9,14 +9,24 @@
 全部回答列表),故 kind 名与"帖子级"这一事实对齐;上游原始值 `answer` 只在
 `_upstream._norm_item` 一处被翻译,本模块不出现它。
 """
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import _net
-from ._config import (ENTITY_KINDS, VIP, _burst, apply_link_policy, log,
-                      max_detail_knowledge)
-from ._errors import InternalError, UpstreamError
+from ._config import (ENTITY_KINDS, VIP, _burst, log,
+                      max_detail_knowledge, read_keys, read_truncated_values)
+# ⚠️ `UpstreamError` 曾在此 import —— 是**死 import**(本文件只在注释里提到它,
+# 代码零读点:上游故障一律经 `_net.UPSTREAM_FAILURES` 整类判定,不按具体类型分支),
+# 故删除(2026-10-01 死 import 清理;编号口径见 ADR-0018 末节 —— 它**不是**
+# ADR-0014 的 `D14`,那套编号指的是"产品线字面推导删除")。若将来要按类型分支,
+# 从 `_net` 的元组取,别在这里重导。
+from ._errors import InternalError, _raise_min
+# ⚠️ 链接构造与政策闸门**合在一处**走 `link_for_item`(2026-10-01,K1):
+# 原先此处写 `apply_link_policy(kind, _URL_OF[kind] % id)` —— 闸门与模板各来一处,
+# 且问答的回答号在这里另按 `bestAnswer[0]` 推导(与清单侧分叉)。`_URL_OF` 已不在
+# 本模块 import:留着它就是第三处拼 url 的入口。
+from ._links import link_for_item
 from ._text import _is_true, html2text
-from ._upstream import _URL_OF, _question_url
 
 # ⚠️ **深读侧的全部网络调用必须经 `_net._get_json` 属性访问**(2026-09-29 出口统一)。
 # 原先写 `from ._net import _get_json` 是 import 期快照 —— 替换 `_net._get_json`
@@ -30,7 +40,7 @@ def _knowledge_article(kid, rate=None):
     d = _net._get_json(VIP + "/knowledgeapi/knowledge/" + str(kid), rate)
     return {"ok": True, "id": str(kid), "type": "knowledge", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": apply_link_policy("knowledge", _URL_OF["knowledge"] % kid),
+            "url": link_for_item("knowledge", kid),
             "products": [p.get("name") for p in (d.get("products") or [])][:3],
             "updatedAt": d.get("updatedAt")}
 
@@ -95,24 +105,36 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
     # 理由沿用 ADR-0016 决策 3 删 `--budget` 的先例:没有调用方可用它,
     # 就等于画上去的旋钮。
     max_detail = max_detail_knowledge() if max_detail is None else max_detail
+    # ⚠️ `truncated` 的**两个枚举值从声明取**(2026-10-01,D12):此前 `"answer_limit"`
+    # / `"upstream_error"` 各在下面的分支里写一遍字面量,而枚举的语义表只在 docstring
+    # 与 ANSWER-SPEC 里 —— 改枚举值要同时改四处,没人盯得住。现在声明是单一来源,
+    # 消费者是本函数(有回归钉子:改声明里的值 → 真实输出的 `truncated` 跟着变)。
+    # ⚠️ 必须在**函数开头**取(而不是在那两个分支里就地取):下面 `except` 块也要用它,
+    # 就地取会把取值点放进 `try` 内,异常路径取不到。
+    tvals = read_truncated_values()
     # ⚠️ **问答的 url 是长形式**(2026-09-29 改判):`/questions/<帖子号>/answers/<回答号>`。
-    # 回答号取自 `d["bestAnswer"][0]["id"]`(采纳回答的回答号)—— 实测网页长形式
-    # 22/22 可点,而短形式 `/question/<qid>` 恒死。
+    # 回答号**不再取自 `d["bestAnswer"][0]["id"]` 这个单点**(2026-10-01,K1):
+    # 原先无采纳帖时该取法给不出链接,而清单侧同一帖会回落到上游首条 ——
+    # 实测复现:同帖两条都未被采纳的回答,`search` 给 `…/answers/A1`、`read` 给 `None`。
+    # 现在两侧共用 `_links.compose_url` 的**同一套回落链**(采纳优先 → 上游首条),
+    # 候选集在下面 `answers` 建好后一并交给它(见函数末尾的赋值与注释)。
     # ⚠️ `d["answers"]` 是回答**条数**(整数),**不是**数组,不可当数组遍历;
     # 回答列表另有端点(`/api/questions/<qid>/answers`)。
-    # ⚠️ 拿不到采纳回答时**给不出链接**(`_question_url` 返回 None)——不得回落短形式。
+    # ⚠️ 无论如何**不得回落短形式**(`/question/<qid>` 恒死、复数无 aid 段亦死)。
     best = d.get("bestAnswer")
-    best_aid = str(best[0].get("id") or "") if (isinstance(best, list) and best
-                                                and isinstance(best[0], dict)) else ""
+    best_t = best[0] if (isinstance(best, list) and best and isinstance(best[0], dict)) else None
     out = {"ok": True, "id": str(qid), "type": "question", "title": d.get("title"),
            "contentText": html2text(d.get("description")),
-           "url": apply_link_policy("question", _question_url(qid, best_aid)),
+           # ⚠️ **占位**:真值在函数末尾赋(那时 `answers` 才建好,才能把回答列表
+           # 一起交给 `_links` 选回答号)。保留这行只为**键序不变** —— `url` 必须
+           # 仍排在 `contentText` 与 `isSolved` 之间,不许因为"赋值挪后"而漂到末尾。
+           "url": None,
            "isSolved": d.get("isSolved"), "answersCount": d.get("answers"),
            "views": d.get("views"), "rewardCoins": d.get("rewardCoins"),
            "products": _q_products(d),
            "createdAt": d.get("createdAt"), "updatedAt": d.get("updatedAt")}
-    if isinstance(best, list) and best:
-        out["bestAnswer"] = _answer_brief(best[0])
+    if best_t is not None:
+        out["bestAnswer"] = _answer_brief(best_t)
     if with_answers:
         # 回答展开(翻页+逐条详情)是深读里最贵的请求。截断**必须显式标记**并给出
         # "已取/总数"两个数字——截断而不标记等于把"资料不完整"伪装成"资料就是这样"。
@@ -190,22 +212,23 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                             p = futs[fut]
                             try:
                                 ad = fut.result()
-                            except _net.UPSTREAM_FAILURES as e:
+                            except _net.UPSTREAM_FAILURES:
                                 # ⚠️ **catch 的是"上游故障"整类,不是只看 `UpstreamError`**
                                 # (2026-09-29,code review High-1):`_net._get_json` 只把
                                 # "HTTP 200 带 errorCode"包装成 `UpstreamError`;真实的
                                 # 网络抖动(`URLError`/`socket.timeout`)与"响应非 JSON"
                                 # **直接穿透**。原先此处只 catch `UpstreamError`,于是那些
                                 # 形态下本循环被打断、已取页随栈帧丢弃 —— 而检索侧
-                                # (`_manifest.py:386`)早有 `except Exception` 兜底,两侧不对称。
+                                # (`_manifest.py` 的路由级 `except _net.UPSTREAM_FAILURES`)
+                                # 早有兜底,两侧不对称。
                                 # 现与检索侧同口径(共用 `_net.UPSTREAM_FAILURES`)。
                                 # ⚠️ **按页号记账,不按完成顺序**(2026-09-29,code review M-1):
                                 # 原先只留"第一个异常",而"第一个"取的是 `as_completed` 的
                                 # 完成序 —— 哪一页被报出去取决于线程调度,等于**让完成先后
                                 # 泄漏进结果**(本仓明令禁止:见 `_manifest` 的路序纪律)。
-                                # 改为记 `{页号: 异常}`,报告时取**最小页号**那个 —— 确定、
-                                # 可复现,与调度无关。
-                                failed_pages[p] = e
+                                # 改为记 `{页号: exc_info}`,报告时取**最小页号**那个 —— 确定、
+                                # 可复现,与调度无关(重抛见 `_errors._raise_min`)。
+                                failed_pages[p] = sys.exc_info()   # 三元组:重抛带原 traceback
                                 continue
                             ordered[p] = [_answer_brief(a) for a in (ad.get("content") or [])]
                             # ⚠️ 原为 `total_pages = max(total_pages, ad.get("totalPages") or 1)`
@@ -226,13 +249,13 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                 if failed_pages:
                     # ⚠️ **报告"最小页号"那个异常,并把失败规模一并记进日志**
                     # (2026-09-29,code review M-1)。两件事在这里一并收口:
-                    #   ① **确定性**:`min(failed)` 只取决于页号,与线程调度无关
+                    #   ① **确定性**:`_raise_min` 取的最小键只取决于页号,与线程调度无关
                     #      —— 原先留的"第一个异常"取完成顺序,同一输入可能报不同的页;
                     #   ② **失败规模可见**:`failedPages` 与页号列表进 stderr。
                     #      ⚠️ 这**不是**给调用方的信号(那需要新增契约字段,本轮不做),
                     #      只是让排查者能从日志分清"1 页失败"与"5 页全失败"——
                     #      原先两者连日志都一模一样,属"用一处静默换另一处静默"的弱形态。
-                    raise failed_pages[min(failed_pages)]
+                    _raise_min(failed_pages)
             # ⚠️ `total_pages` 之后**不再被赋值**(原 `except` 分支里的
             # `total_pages = None` 也是死写,一并删除 —— 同上 H4)。
             # ⚠️ `answers` 已在首页处绑定同一个 `pages` 列表对象,此处**不得重新赋值** ——
@@ -240,7 +263,8 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
             answers.sort(key=lambda a: (not a["adopted"]))
             # 详情补全只覆盖前 N 条,其余仍是列表摘要 —— 这是**唯一**剩下的截断来源。
             if len(answers) > max(max_detail, 0):
-                truncated = "answer_limit"
+                # ⚠️ 枚举值取自声明(2026-10-01,D12),见函数开头的 `tvals`。
+                truncated = tvals["answerLimit"]
             # 逐条详情并发取(最多 max_detail 条)。⚠️ **按下标写回**:每个 future
             # 只改自己那一条,顺序由列表下标固定,与完成先后无关。
             # ⚠️ **逐 future 记账,一个失败不打断其余写回**(2026-09-29,对抗性核实 F1):
@@ -259,15 +283,25 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
             targets = answers[:max(max_detail, 0)]
             if targets:
                 det_failed = {}
-                with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+                # ⚠️ **并发度必须有上界**(2026-10-01 并发上界收口;编号口径见 ADR-0018 末节
+                # —— 它**不是** ADR-0014 的 `D13`,那套编号指的是"字段集收进 contract.json"):
+                # 原写 `max_workers=len(targets)`,
+                # 即"条目数说了算"—— 与翻页那支同病(那里原写 `total_pages - 1`,
+                # 实测构造 `totalPages=200` 会建 199 个线程)。今天只因声明里
+                # `maxDetail=5 < burst=7` 才没出事,但那是**声明值的巧合**,不是机制。
+                # 现与翻页那支同口径:`max(1, min(len(targets), _burst()))` ——
+                # 上界取 `limits.rate.interactive.burst`(当前 7,与"单次操作最大在飞
+                # 请求数"对齐),不自造第二个限速器(违反"单一来源")。
+                det_workers = max(1, min(len(targets), _burst()))
+                with ThreadPoolExecutor(max_workers=det_workers) as pool:
                     futs = {pool.submit(_net._get_json, VIP + "/api/answers/" + a["id"],
                                         rate): i for i, a in enumerate(targets)}
                     for fut in as_completed(futs):
                         i = futs[fut]          # 下标:写回定位与失败记账都用它
                         try:
                             det = _answer_brief(fut.result())
-                        except _net.UPSTREAM_FAILURES as e:
-                            det_failed[i] = e
+                        except _net.UPSTREAM_FAILURES:
+                            det_failed[i] = sys.exc_info()   # 三元组:重抛带原 traceback
                             continue
                         a = targets[i]         # 列表里同一个对象,就地写回
                         if len(det.get("contentText") or "") > len(a.get("contentText") or ""):
@@ -275,7 +309,7 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                         if det.get("discussion"):
                             a["discussion"] = det["discussion"]
                 if det_failed:
-                    raise det_failed[min(det_failed)]
+                    _raise_min(det_failed)
         except _net.UPSTREAM_FAILURES as e:
             # ③ 上游故障:与"资料就这么多"是两件事——调用方该重试,不该接受现状。
             # ⚠️ **本 catch 覆盖"上游故障"整类,不只是 `UpstreamError`**(2026-09-29,
@@ -286,7 +320,7 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
             # **把已取回的回答整包丢弃**(实测 8 条 → 0 条),且连 `UPSTREAM_ERR`
             # 日志都没有 —— 比"首页被丢"更差,因为调用方拿到的是"内部错误",
             # 会去查 bug 而不是重试。
-            # 现已与检索侧(`_manifest.py:386`)同口径:凡属上游故障,一律
+            # 现已与检索侧(`_manifest._search_manifest` 的路由级 catch)同口径:凡属上游故障,一律
             # 置 `upstream_error` 并把**已取回的页交出去**(见 `pages` 的绑定说明)。
             # 程序缺陷(AttributeError/TypeError 等)**刻意不在**本元组里,仍会响亮穿透。
             code = getattr(e, "code", None)
@@ -300,12 +334,44 @@ def _question_detail(qid, with_answers=True, max_detail=None, rate=None):
                 % (qid, code, sorted(failed_pages) or "n/a",
                    str(getattr(e, "message", "") or e)[:200]))
             # ⚠️ 原此处 `total_pages = None` 是**死写**(后面无读点),已删(工单 #30/H4)。
-            truncated = "upstream_error"
+            # ⚠️ 枚举值取自声明(2026-10-01,D12):调用方靠它区分"该重试"与"接受现状"。
+            truncated = tvals["upstreamError"]
         if truncated:
             out["truncated"] = truncated
         out["answersTaken"] = len(answers)
         out["answersTotal"] = d.get("answers")
         out["answers"] = answers
+    # ---- 问答帖的 url:与**清单侧同一套规则**(2026-10-01,K1) ----
+    #
+    # ⚠️ **必须在这里定,不能在 `out` 里定**:回答列表(`answers`)只有走完
+    # `with_answers` 分支才存在,而回答号要在**候选集**上才能选 —— 原先在 `out`
+    # 里按 `bestAnswer[0]` 单点取法,于是无采纳帖给不出链接,与清单侧分叉。
+    #
+    # 候选集 = 采纳答案(`bestAnswer`,标为已采纳)+ 回答列表的 `(id, adopted)`。
+    # `_pick_answer_id` 的规则:采纳优先 → 否则上游首条 → 否则 None。
+    #
+    # ⚠️ **两侧必然同号的理由**(别以为还是两套规则):上面 `answers` 已做过
+    # `answers.sort(key=lambda a: (not a["adopted"]))` —— 即"采纳在前、其余保持
+    # 上游顺序",与 `_pick_answer_id` 的语义**相同**。故对同一构造,清单侧
+    # (`_manifest_merge` 的 `ns`,上游返回顺序)与 read 侧选出的是同一个回答号。
+    #
+    # ⚠️ **`with_answers=False` 时只有 `bestAnswer` 可用** → 无采纳帖仍给不出链接。
+    # 那是**注入专用路径**:生产 `read` 恒走 `with_answers=True` 的默认值
+    # (`_public.read` → `_detail` → `_question_detail`,不留任何关掉它的入口;
+    # 只有测试显式传 False)。**不许**据此认为"对内也分叉"。
+    #
+    # ⚠️ **残留边界(如实记,不假装已消除)**:若上游搜索**压根没召回该帖的采纳回答**,
+    # 清单只知道"这帖有采纳答案"(`adopted` 为真)却不知道是哪条 → 只回落到首条;
+    # 而 read 拿得到 `bestAnswer` → 两侧仍可能不同。这是**信息可见性**的差
+    # (上游那一轮没把采纳回答返给我们),**不是规则的分叉** —— 规则只有一套。
+    # 处理方式与顶层 `total` 那次相同 —— **写清,不假装**(那个字段本身已于 v6.9 删除;
+    # 留下的是当时那条处置原则,不是字段)。
+    if best_t is not None:
+        cand = [(str(best_t.get("id") or ""), True)]
+    else:
+        cand = []
+    cand += [(a.get("id"), a.get("adopted")) for a in (out.get("answers") or [])]
+    out["url"] = link_for_item("question", out.get("id"), cand)
     return out
 
 
@@ -314,7 +380,7 @@ def _article_detail(aid, rate=None):
     classes = [c.get("name") for c in (d.get("classifies") or []) if c.get("name")]
     return {"ok": True, "id": str(aid), "type": "article", "title": d.get("title"),
             "contentText": html2text(d.get("content")),
-            "url": apply_link_policy("article", _URL_OF["article"] % aid),
+            "url": link_for_item("article", aid),
             "products": classes[:3], "supports": d.get("supports"), "views": d.get("views"),
             "updatedAt": d.get("updatedAt")}
 
@@ -323,7 +389,7 @@ def _detail(kind, oid, rate=None):
     """详情统一入口(纯在线,不写穿落地缓存)。
 
     保留它是因为 3 个 kind 的分发点只应有一处;调用方无需知道分发表存在。
-    URL 由各 kind 函数按 `_URL_OF` 模板统一构造,不在此处补齐。
+    URL 由各 kind 函数经 `_links` 统一构造(`link_for_item`),不在此处补齐。
     `refresh` 形参已删除(2026-09-18):内核恒在线,该形参在原实现里恒无效。
 
     ⚠️ **`other` 档是合法 kind 但没有全文端点**(2026-09-29,工单 #32):
@@ -331,6 +397,12 @@ def _detail(kind, oid, rate=None):
     必须给出**准确**的提示(说清"这一档没有全文端点"),而不是让 `_detail` 直接
     `KeyError` —— 那会被 `cli._guard` 兜成 `internal_error`("这是 bug 而非用法问题"),
     把调用方引向"我是不是传错了"的方向,而它其实没传错。
+
+    ⚠️ **这一档的"分类"由本处声明**(2026-09-29 收口):`code="unsupported_kind"` 是
+    机器可判的唯一分类来源,CLI 只读 `InternalError.code`,**不再对文案做子串匹配**
+    —— 原先 CLI 靠 `"没有它的全文端点" in str(e)` 判定,于是**改一个措辞就会让
+    分类静默漂移**(exit 1 退化成 exit 2)。文案与分类现在完全解耦:上面这段 message
+    可以随便重写,分类不变(有回归钉子)。
     """
     fn = _DETAIL_FN.get(kind)
     if fn is None:
@@ -340,9 +412,41 @@ def _detail(kind, oid, rate=None):
                 "kind=%r 是合法类型,但内核**没有它的全文端点**:这一档收容的是"
                 "上游罕见实体(课程/学习路径/专题/直播等),各类型的详情端点形状不一"
                 "(部分无端点、个别 url 在第三方域),故未接入 read。"
-                "清单条目本身已给出 title 与 upstreamType,可据此自行判断。" % (kind,))
+                "清单条目本身已给出 title 与 upstreamType,可据此自行判断。" % (kind,),
+                code="unsupported_kind")
         raise InternalError("bad kind: %s(%s)" % (kind, "|".join(_DETAIL_KINDS)))
-    return fn(oid, rate=rate)
+    return project_read(fn(oid, rate=rate), kind)
+
+
+def project_read(payload, kind):
+    """按 `read` 声明投影深读返回体(**声明的生产消费者**,2026-10-01,D12)。
+
+    与 `_manifest.project_top`(search 侧)同构:声明里列了哪些键,最终返回体就只有
+    哪些键 —— 「声明即闸门」这条机制在两个面上形状一致。
+
+    ⚠️ **为什么要投影**:此前 read 的键集只活在三个档函数手写的 dict 里
+    (`_knowledge_article` / `_question_detail` / `_article_detail`),声明与代码之间
+    没有任何约束关系 —— 从 `contract.json` 删一个键,真实输出不会有任何变化。
+    收进声明段后,投影点是这条约束的**唯一执行者**(有回归钉子证明两个方向都会红)。
+
+    ⚠️ **缺键就"不产出",绝不 `payload[k]`**(取值用 `k in allowed`):这是从 search
+    侧 `stats` 那条负路径学来的教训 —— 用下标取值时"从声明删一个键"会直接 `KeyError`,
+    把「删声明即删输出」退化成「删声明即崩溃」。声明缺一个键是**允许的配置状态**,
+    它的正确后果是"这个字段不出现",不是"整个 read 炸掉"。
+
+    ⚠️ **键序:按返回体自身顺序过滤,不按声明顺序拼接**(与 `project_top` 的写法不同,
+    这是刻意的):read 三档里公共键被**专属键插开** —— question 档的真实顺序是
+    `… rewardCoins, products, createdAt, updatedAt …`(`products` 是从公共段来的),
+    按"公共段拼专属段"产出会把 `products`/`updatedAt` 提前,键序当场变化。而键序是
+    可观测的对外行为(CLI 输出的是有序 JSON),本段定位是「把既有事实收成单一来源」,
+    **不是改契约**。故声明在这里管**键集**,键序仍由构造顺序承载。
+
+    ⚠️ **必须被调用两次**(见 contract.json 的 `read.note_statsInjection`):
+    `_detail` 里这一次 + `_public.read` 注入 `stats` 之后再一次 —— 后者是 `stats`
+    也在声明里的代价(与 search 侧 `project_top` 的两段式同因)。
+    """
+    allowed = read_keys(kind)
+    return {k: v for k, v in payload.items() if k in allowed}
 
 
 _DETAIL_FN = {"knowledge": _knowledge_article, "question": _question_detail,

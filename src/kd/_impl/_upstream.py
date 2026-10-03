@@ -19,46 +19,27 @@ import urllib.parse
 
 from . import _net
 from ._config import UPSTREAM_TEXT_MAX, VIP
+from ._links import compose_url
 from ._net import clamp_query
 from ._text import _is_true, _title_of, html2text
 
-# 条目对外链接模板。可点性**按路径而异**(唯一真源 = contract.json 的 linkPolicy):
-# `knowledge/`、`article/`、`question/` **都给链接**。
+# ⚠️ **链接规则已于 2026-10-01(K1)整体搬到 `_links.py`** —— 那里是条目对外链接的
+# **唯一归属地**:模板(`_URL_OF` 连同 22/22 可点、单数短形式 22/22 死、复数无 aid 段
+# 4/4 死、回答号必须精确、两个方向的误判陷阱、模板与可点性是两件事、`other` 档无模板
+# 的收口那份论证)、必需段规则、回答号选取(`_pick_answer_id`,零算法契约)与政策闸门
+# (`link_for_item`)都在那一处。本模块只**调用** `compose_url`,不再自己拼 url ——
+# 原先"该取哪个回答号"在清单侧与 read 侧各推导一遍,实测同一帖给出不同结果。
 #
-# ⚠️ **问答的模板是长形式,不是短形式**(2026-09-29,链接实测):
-#   * `/questions/<帖子号>/answers/<回答号>` —— 实测 **22/22 可点**;
-#   * `/question/<帖子号>`(单数) —— 实测 **22/22 不可点**(该路径整体不存在);
-#   * `/questions/<帖子号>`(复数、无 aid 段) —— 实测 **4/4 不可点**
-#     (路径存在,但**缺必需的回答号段**)。
-#   **回答号必须精确**:`+1` / `1` / `0` 均落 `/error/404`(站点做精确校验)。
-# 故本模板有**两个**占位符,且任一为空时**不得拼出短形式** —— 短形式恒死,
-# 拼它等于给读者一个死链(见 `_question_url`)。
+# ⚠️ **本模块的调用点刻意不加政策闸门**:`_manifest_project` 仍是清单路径的**唯一**
+# 闸门(见 `_manifest.py` 的 `_manifest_project` —— 它才是清单路径的唯一生效点)。
+# 这里加一道就变成两个闸门 —— 政策有两处生效点,
+# 单一来源即失效。故 `_norm_item` 用 `compose_url`(数据形状层),不是 `link_for_item`。
 #
-# ⚠️ 模板本身与可点性是**两件事**:模板恒按上表产出(它如实指向上游的内容页路径),
-# 是否把该 url 交给读者由 linkPolicy 决定。
-#
-# ⚠️ 陷阱(留证,以免重复踩;两个方向的误判都**实际发生过**):
-#   * `question/` 的**最终 HTTP 状态码是 200**(成功重定向到 404 页),只看状态码会
-#     把失效链接误判为可用——必须看 `url_effective`;
-#   * `article/248777993676668672` 首跳 **302**,但最终 URL 是
-#     `/knowledge/248777993710223104` 且该页**可点**(被迁移成知识文档)。
-#     只看首跳状态码会把可点链接误判为失效——09-18 与 09-27 两份文档都这么记错过。
-_URL_OF = {"knowledge": VIP + "/knowledge/%s",
-           "question": VIP + "/questions/%s/answers/%s",
-           "article": VIP + "/article/%s"}
-# ⚠️ **本表只含恒有链接的三档,`other` 刻意不设模板**(2026-09-29 收口)。
-# `other` 档恒 `no-link`,故任何模板都不会被交给读者 —— 而表中原先确实有一行
-# `"other": None`,其注释自称"`apply_link_policy` 需要一个可被抑制的值"。
-# **那句话与代码不符**:`apply_link_policy(kind, url)` 收的是**条目里的 `url`**
-# (由 `_norm_item` 如实透传上游原值、由 `_manifest_project` 抑制),
-# **从不读 `_URL_OF`**。实测(哨兵实验:把 `_URL_OF["other"]` 换成哨兵串,
-# 两种政策各跑一轮)哨兵**从未出现在输出里**;内存删键后与基线做键级 diff,
-# `results` **逐字段相同**。即该键是**生产死键**,唯一读点是测试的存在性断言 ——
-# 本仓已把"只有测试读"判为病(`CONTEXT.md` 的契约声明条,同型病在 `topKeys` 上
-# 复发过一次),故正确收口是**删键**,不是给它补一个假消费者。
-# 证据链未丢:`other` 无可点网页形式的实测记录在
-# `docs/research/2026-09-29-额外类型链接形式复验.md`,并已完整承载于
-# `contract.json` 的 `linkPolicy.evidence.other`。
+# ⚠️ 模板表 `_URL_OF` **已不在本模块定义** —— 它在 `_links.py`(该名字仍由
+# `_impl/__init__.py` 从那里**再导出**,故观测口 `core._impl()._URL_OF` 与既有回归
+# 断言不受影响)。本模块不再 import 它:留着不用的 import 就是"第二处真相"的入口。
+# ⚠️ 同批搬去的 `_question_url` 已在 `_links.py` 内**删除**(重构后零读点),
+# 本模块也从未引用它 —— 见 `_links.py` 末尾的留证注释。
 
 # ⚠️ 原有一个 `_KNOWN_ET` 映射常量,已删除(2026-09-29,code review L8):
 # `_norm_item` 用的是 `if et == "..."` 字面量分支,**那个常量全仓零读点** ——
@@ -67,20 +48,6 @@ _URL_OF = {"knowledge": VIP + "/knowledge/%s",
 
 # `entity-type` 归入 `other` 档时,**不按类型细分** —— 对外只有一个 `other`。
 # 上游原始值仍如实保留在条目的 `upstreamType` 里(信息不丢,便于调用方自己分辨)。
-
-
-def _question_url(qid, aid):
-    """问答帖的长形式 URL;任一段缺失则返回 `None`(**绝不回落短形式**)。
-
-    短形式 `/question/<qid>` 实测 22/22 不可点,复数无 aid 段 4/4 不可点 ——
-    两者都是死链。故"给不出长形式"时正确的做法是**不给链接**(读者损失一次跳转),
-    而不是给一个必然打不开的地址(读者以为资料不存在)。
-    """
-    qid = str(qid or "").strip()
-    aid = str(aid or "").strip()
-    if not qid or not aid:
-        return None
-    return _URL_OF["question"] % (qid, aid)
 
 
 def _norm_item(x, et):
@@ -104,7 +71,8 @@ def _norm_item(x, et):
         否则同一帖会各自成条(旧形态),且读取时还得回答"该传哪个 id";
       * 上游同时给的回答 id 与 `questionId` 两个 id 空间,在这里**收口成一个**:
         `questionId` 字段整体删除,`id` 取帖子号。
-      * `url` 用**长形式**(帖子号 + 回答号)——见 `_question_url`,2026-09-29 改判。
+      * `url` 用**长形式**(帖子号 + 回答号)—— 拼法见 `_links.compose_url`
+        (2026-09-29 改判为长形式;2026-10-01 K1 起归属 `_links`)。
 
     ⚠️ **`comments` 三类都取**(D2 修复,v6.6):上游**三类条目都给** `comments`
     (实测同一响应内 0/2/3),而原实现只在 answer 分支取它——knowledge/article 的
@@ -115,7 +83,7 @@ def _norm_item(x, et):
     if et == "knowledge":
         kid = str(x.get("knowledgeId") or x.get("id") or "")
         return {"type": "knowledge", "id": kid,
-                "url": _URL_OF["knowledge"] % kid if kid else None,
+                "url": compose_url("knowledge", kid),
                 "title": _title_of(hl.get("title"), x.get("title")),
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "comments": x.get("comments"),
@@ -130,8 +98,22 @@ def _norm_item(x, et):
         aid = str(x.get("id") or "")
         return {"type": "question", "id": qid,
                 # 长形式 `/questions/<帖子号>/answers/<回答号>`;回答号缺失时给 None
-                # (不给短形式——它 22/22 不可点,给了就是死链)。
-                "url": _question_url(qid, aid),
+                # (不给短形式——它 22/22 不可点,给了就是死链)。**模板与必需段规则
+                # 现在只在 `_links.py` 一处**;这里如实建 url,政策闸门在 `_manifest_project`。
+                #
+                # ⚠️ **本条目的 url 在清单主链上会被帖级合并重算**(2026-10-01,独立终审
+                # Standards 轴指出后核实):`_manifest_merge` 对 `type=="question"`
+                # **无条件**重算 url(因为帖级要按"采纳优先"在**同一帖的多条回答**里挑
+                # 一条,而单条回答不知道自己是不是被采纳的那条)。故本行在**端到端 search**
+                # 上的值不直接进入输出 —— 它的作用是:
+                #   ① 回答级条目**本身是合法的中间形态**(`_norm_item` 也是公开观测口
+                #      `core._impl()._norm_item`,直调它的判据读这一行);
+                #   ② knowledge / article 两档**没有**帖级合并那一步,本行的值就是
+                #      最终值(实测:两档 norm 的 url 与 merge 的输出逐字相同)。
+                # 之所以不删:删了会让"归一即产出合法条目"这条契约在 question 档破例,
+                # 且会让直调 `_norm_item` 的判据失去被测对象。**留着但如实记下**,
+                # 比给一个看起来有消费者的字段好(同 `total` 那次的处置原则)。
+                "url": compose_url("question", qid, [(aid, None)]),
                 # ⚠️ 回答号随条目走,供 `_manifest_merge` 在**帖级合并**时按
                 # "采纳优先"选一条来定 URL(同帖多条回答各有自己的回答号)。
                 # 它是**内部字段**(前导下划线),不在 `contract.json` 的条目字段集里,
@@ -150,7 +132,7 @@ def _norm_item(x, et):
     if et == "article":
         arid = str(x.get("id") or "")
         return {"type": "article", "id": arid,
-                "url": _URL_OF["article"] % arid if arid else None,
+                "url": compose_url("article", arid),
                 "title": _title_of(hl.get("title"), x.get("title")),
                 "snippet": html2text(hl.get("content") or x.get("summary") or "")[:400] or None,
                 "comments": x.get("comments"),
@@ -161,7 +143,8 @@ def _norm_item(x, et):
     # ⚠️ **这是本缺陷的正面修复**:原实现到此 `return None` —— 上游给的
     # `LearningCourse`(课程)/ `LearningPath`(学习路径)/ `KnowledgeSpecial`(专题)/
     # `LearningBroadcast`(直播)等**一律静默丢弃**,且丢弃**没有任何信号**。
-    # 端到端实测后果:搜「微课」→ `total: 212` 而 `results` 只 2 条、`routeErrors: []`、
+    # 端到端实测后果:搜「微课」→ `total: 212`(**当时口径**;该顶层字段已于 v6.9 删除,
+    # 是历史的观测值而非现状)而 `results` 只 2 条、`routeErrors: []`、
     # `scanNote` 写"1/1 路完成" —— 三处矛盾同时出现,调用方会告诉用户"官方没这类资料"。
     # 这是本项目最忌讳的失效形态:**把"我们没读懂"伪装成"上游没有"**。
     #

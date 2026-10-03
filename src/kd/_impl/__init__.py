@@ -27,9 +27,13 @@
              原文说这个位置属于 `_search_upstream`,**那句是错的** —— 深读侧 5 个
              调用完全不经过它)。调用方一律属性访问(`_net._get_json`),不得快照
   _text      html2text、标题降级链(_title_of)
-  _upstream  上游检索调用与条目规范化(_norm_item)、链接模板(_URL_OF)
+  _upstream  上游检索调用与条目规范化(_norm_item)
              ⚠️ 上游 `answer` → 对外 `question` 的**唯一映射点**在这里
              ⚠️ 本模块的 `_search_upstream` 是**检索侧**的唯一出口(不是全内核的)
+             ⚠️ 链接模板与回答号选取**已搬到 `_links`**(2026-10-01,K1)
+  _links     条目对外链接的**唯一归属地**:模板(_URL_OF)、必需段规则、回答号选取
+             (_pick_answer_id,零算法契约)、政策闸门(link_for_item 收口)、
+             数据形状层(compose_url,不含闸门)。改链接规则只改这里
   _routes    调用方给的词 → 检索路(_plan_routes)、路去重(_dedupe_routes)
              ⚠️ 拆词器已于 v6.6 整体删除(ADR-0016):本模块**不生成任何检索词**
   _manifest  多路清单执行链(唯一检索路径)、帖级归并(_manifest_merge)、声明投影
@@ -92,7 +96,18 @@ from ._config import (  # noqa: F401
 )
 from ._net import UPSTREAM_FAILURES, _get_json, clamp_query  # noqa: F401
 from ._text import _is_true, _title_of, html2text  # noqa: F401
-from ._upstream import _URL_OF, _norm_item, _search_upstream  # noqa: F401
+from ._upstream import _norm_item, _search_upstream  # noqa: F401
+# ⚠️ **链接件由 `_links` 再导出**(2026-10-01,K1):`_URL_OF` 原先从 `_upstream` 出,
+# 现归属 `_links` —— 名字与观测口(`core._impl()._URL_OF`)不变,既有回归断言
+# (如 `t_other_tier` ④ 断言 `_URL_OF` 不含 other)仍然读到那一份。
+# ⚠️ 同批搬去的 `_question_url` 已**再删除**(重构后零生产读点、零回归读点;
+# 详见 `_links.py` 末尾的留证注释),故不在此导出 —— 删掉一个死名字比留着它诚实。
+from ._links import (  # noqa: F401
+    _URL_OF,
+    _pick_answer_id,
+    compose_url,
+    link_for_item,
+)
 from ._routes import _dedupe_routes, _plan_routes, _stamp_product  # noqa: F401
 from ._manifest import (  # noqa: F401
     _PER_ROUTE_WANT,

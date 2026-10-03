@@ -81,16 +81,25 @@ def _guard(fn, op="search"):
         }})
         sys.exit(1)
     except core.InternalError as e:
-        # ⚠️ **`other` 档不是用法错误**(2026-09-29,code review L10):它是**合法类型
-        # 但没有全文端点** —— 报 `usage` + "查看用法: kd --help" 与它自己的 message
-        # ("你其实没传错")正相矛盾,会把调用方引向"改参数"而那不是解法。
+        # ⚠️ **`other` 档不是用法错误**(2026-09-29,code review L10):它是**内核承认的
+        # 类型但没有详情端点**(能力边界)—— 报 `usage` + "查看用法: kd --help" 与它
+        # 自己的 message("你其实没传错")正相矛盾,会把调用方引向"改参数"而那不是解法。
         # 故按能力边界报 `unsupported_kind`(退出码仍是 1:这不是命令行用错)。
-        if "没有它的全文端点" in str(e) or "合法类型" in str(e):
+        #
+        # ⚠️ **分类只读 `e.code`,不对 message 做子串匹配**(2026-09-29 收口):
+        # 原先这里写 `if "没有它的全文端点" in str(e) or "合法类型" in str(e)` —— 分类
+        # 挂在**文案**上,于是改一个措辞就让 `unsupported_kind`(exit 1)无声退化成
+        # `usage`(exit 2),而那一档当时**零回归覆盖**,漂移没有任何信号。
+        # 现在分类由**抛出处**声明(`_detail` 里 `code="unsupported_kind"`),文案与分类
+        # 彻底解耦;本文件里再出现任何文案子串判断都算回归(有用例按源码钉住)。
+        if getattr(e, "code", None) == "unsupported_kind":
             _fail("unsupported_kind", str(e),
                   hint="这是**已知的能力边界**,不是参数写错:该档收容的上游罕见实体"
                        "没有统一可用的详情端点。清单条目已给出 title 与 upstreamType,"
                        "可据此判断要不要另找途径。",
                   example='kd search --kw "课程" --include-other')
+        # 兜底:**未带分类**的 InternalError 仍按用法错误处理(含全部"参数写错"的形态:
+        # 未知 kind / id 为空 / keywords 缺失等),与改动前逐字相同。
         _usage_error(str(e), hint="查看用法: kd --help", example=_ex)
     except core.UpstreamError as e:
         if read_op:
@@ -122,7 +131,7 @@ def cmd_search(a):
     _prog("多路检索 %d 路: %s" % (len(pack.get("queries") or []),
                                   " | ".join(str(q) for q in pack.get("queries") or [])))
     if pack.get("otherSkipped"):
-        # 罕见类型默认隐藏,但**必须可见**(工单 #32):否则"total 大而 results 小"
+        # 罕见类型默认隐藏,但**必须可见**(工单 #32):否则"清单比实际召回少了一截"
         # 的差额又会变成无解释的静默。
         _prog("隐藏 %d 条罕见类型(课程/路径/专题等;需 --include-other 才返回)"
               % pack.get("otherSkipped"))
@@ -195,8 +204,13 @@ def build_parser():
     p.add_argument("--version", action="version", version="kd %s(library mode)" % _VERSION)
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    # ⚠️ help 文案里的内核数值**从单一来源取**,不再写死字面量(2026-10-01,D2 同型收口):
+    # 原先这里写死 `pageSize=10` 与 `默认 7 词`,而它们是 `_PER_ROUTE_WANT` 与
+    # `limits.maxKeywords` 的值 —— 改了内核而文案没跟上时,用户看到的是**错的说明**,
+    # 且**没有任何信号**(本仓纪律:「生存期只有一处真相」)。
     s = sub.add_parser("search", help="唯一检索入口:多路关键词检索,只出帖级标题清单"
-                                      "(每路 pageSize=10,按你给词的顺序;要全文再用 kd read)",
+                                      "(每路 pageSize=%d,按你给词的顺序;要全文再用 kd read)"
+                                      % _IMPL._PER_ROUTE_WANT,
                        epilog='示例:\n'
                               '  kd search --kw "应用为禁用状态[网关]" --kw "2510" --product 93\n'
                               '  kd search --kw "信用额度" --kw "应收单 信用"   # 拆好的词,按序发,每词一路\n'
@@ -208,7 +222,8 @@ def build_parser():
                    help="检索词(可重复,**每词一路**)。**内核原样、按你给的顺序发送**"
                         "(不拆解/不扩充/不前置/不排序)。顺序即召回顺序:排序键第一维是"
                         "『你给的第几个词』。拆词规范见 SKILL.md 的「拆词规范」节。"
-                        "超过上限(默认 7 词)按顺序取前 N 个,返回体写明 keywordsDropped")
+                        "超过上限(默认 %d 词)按顺序取前 N 个,返回体写明 keywordsDropped"
+                        % _IMPL.max_keywords())
     s.add_argument("--product", type=int, default=None,
                    help="93=星空旗舰版(默认) 87=苍穹 1=企业版/标准版 2=星空侧二开问答专区 "
                         "0=不过滤(显式指定才生效)。产品线由你判定;不传即默认,内核不做字面推导")
@@ -242,7 +257,34 @@ def build_parser():
     return p
 
 
+def _harden_console():
+    """把控制台 I/O 的**错误处理**降级为替换,保留控制台自身编码(2026-10-01,I2)。
+
+    ⚠️ **为什么必须在 `parse_args()` 之前**:`argparse` 的 `print_help()` 与用法错误
+    **直接写 `sys.stdout` / `sys.stderr`**,而 `_out` / `_prog` 里的 `reconfigure`
+    **保护不到它们** —— `--help` 在 `_out` 之前就 `SystemExit` 了。
+    实测(zh-CN Windows 默认控制台 = cp936/GBK):`kd --help` 抛
+    `UnicodeEncodeError: 'gbk' codec can't encode character '\\u26a0'`、**退出码 1**
+    (文案里的 `⚠️`)。连带后果是 `install.ps1` 的验证闸门 —— 它跑的就是含
+    `t_cli_help`(断言 `--help` 退出码 0)的离线回归 —— 在中文 Windows 上**必然判红**。
+    任意平台可复现(故回归钉子是离线、跨平台的):
+        PYTHONIOENCODING=gbk python3 src/kd_run.py --help
+
+    做法是**只改 `errors`,不改 `encoding`**:帮助文案里的中文在 cp936 上仍可读,
+    编不出的字符(`⚠️` 这类)降级成 `?`。⚠️ **不得**在这里设 `encoding="utf-8"` ——
+    控制台编码不该由我们改写;JSON 输出的**字节级稳定**由 `_out` 单独保证
+    (agents 会解析它,那一条不动)。
+    失败时静默(参考 `_prog` 的既有写法:`stdout` 可能是 `StringIO`,没有 `reconfigure`)。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    _harden_console()
     a = build_parser().parse_args(argv)
     a.fn(a)
 

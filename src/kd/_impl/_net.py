@@ -66,9 +66,27 @@ from ._errors import QueryTooLong, UpstreamError
 # ⚠️ 另一处对照:畸形 id 若含非 ASCII(实测 `qid='中文帖号'` → `UnicodeEncodeError`)
 # **不在**本元组里,会穿透成 `internal_error`。即**两类畸形输入的对外表现不一致** ——
 # 这是已知的不一致,**未修**(归入"输入校验"这一独立课题,不在本轮范围)。
-# 消费者:`_detail` 的**页级 catch** 与**外层 catch**(两处必须同源,否则又会出现
-# "某层认识这种失败、另一层不认识"的不对称 —— 那正是 High-1 的成因:
-# `_manifest` 的检索侧早就有 `except Exception` 兜底,而深读侧只认 `UpstreamError`)。
+# 消费者(**四处,必须同源**;2026-09-29 收口后检索侧也已归队;2026-10-01 由「三处」
+# 更正为「四处」—— 原先漏掉了深读侧的**详情补全块**,那正是"注释自称的消费者数
+# ≠ 代码里的实际数量"这一病):
+#   * `_manifest` 的**路由级 catch**(检索侧,`_search_manifest`)—— 属于本元组 → 进
+#     `routeErrors`(失败隔离);不属于 → 穿透成 `internal_error`;
+#   * `_detail` 的**页级 catch**、**详情补全块**(逐条回答详情那支的 catch,
+#     `_question_detail` 里按**下标**记账、取最小下标重抛)、与**外层 catch**
+#     (深读侧)—— 属于本元组 → 降级为 `truncated="upstream_error"` 并交出已取回的页;
+#     不属于 → 穿透。
+# 复核口径(**原样复制执行即可复跑**)。两件事使这条命令必须写成现在的形态:
+#   ① `--exclude=_net.py`:本行注释自身含该模式,不排除就会多算一条;
+#   ② 用 `-E` 把"是否绑定 `as e`"也算进来 —— 三处消费者里有两处不再需要异常变量
+#      (它们改记 `sys.exc_info()`,见 `_errors._raise_min`),故只看 `as e:` 会少数。
+#   grep -rn --exclude=_net.py -E 'except _net\.UPSTREAM_FAILURES( as e)?:$' src/kd/_impl/*.py
+#   → **4 条**(`_detail` 三处:页级 catch / 详情补全块 / 外层 catch;`_manifest` 一处:
+#      路由级 catch),与上面枚举的四个消费者一一对应。
+# ⚠️ **本注释的历史形态(留证)**:收口前检索侧写的是 `except UpstreamError` +
+# `except Exception` 两条 —— 后一条把**程序缺陷**也吞成"上游抖了"并写进 `routeErrors`,
+# 于是 SKILL.md 的规则「`routeErrors` 非空 ⇒ 换词重试」变成了对调用方的**错误指令**;
+# 而深读侧当时只认 `UpstreamError`,真实网络故障全部穿透(High-1)。两侧各自错在不同的
+# 方向上,共同点就是**没有共用这一处分类**。现在四处 catch 的宽度都逐字等于本元组。
 UPSTREAM_FAILURES = (UpstreamError, OSError, json.JSONDecodeError,
                      http.client.HTTPException)
 

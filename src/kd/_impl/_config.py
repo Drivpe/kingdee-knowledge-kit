@@ -26,6 +26,19 @@ HDRS = {"User-Agent": UA, "Accept": "application/json"}
 # ---- 单一真源(守卫/回归钉住,勿在别处复制字面量) ----
 # 版本号:pyproject.toml 的 version 与此处一致(6.6.0 = 6.6 的三段写法),
 # __init__.__version__ 与 cli._VERSION 均从此处取。
+# 6.9 = 删顶层 `total`(2026-10-01,**破坏性变更**):
+#       顶层返回体不再带 `total`(`contract.json` 的 `topKeys` 与内置兜底键集同步删除,
+#       真实输出跟着消失 —— 声明即渲染闸门,有回归钉子)。
+#       理由:**它没有任何可行动的用法** —— 本仓文档明写「比对检索效果只看金标位次,
+#       不看 total」;而它是**各路上游 `totalElements` 的最大值**,既不是清单长度、
+#       也不是过滤后该类型的条数(实测 `total: 74` 而 `results: []`),读它只会得出
+#       错误结论。留一个被自家文档劝退的字段 = 给调用方一个不该读的数。
+#       差额解释的载体改为:`results` 长度 + `otherSkipped` + `keywordsDropped`
+#       + `routeErrors`。
+#       连带删除:`_route_search_once` 读上游 `totalElements` 那一段(顶层 `total` 是
+#       它唯一的消费者,删完它就成了"生产者无消费者",与 `total` 同病灶)。
+#       ⚠️ `answersTotal`(read 侧)是另一个概念,不动;测试桩里的 `totalElements`
+#       是**上游响应形状**的模拟,保留。
 # 6.8 = 台账校正轮收尾(2026-09-29,**含行为修复**):
 #       ① **上游故障时已取回的结果不再被丢弃**(口径限定:针对**上游故障**整类 ——
 #         网络不可达/超时/响应非 JSON/上游业务错误壳;程序缺陷仍穿透为内部错误)。
@@ -53,7 +66,7 @@ HDRS = {"User-Agent": UA, "Accept": "application/json"}
 # 6.4 = 契约重构(决策 D4-D14):清单改**帖子级**、type/kind 统一改名 question、
 #       产品线字面推导整体删除、清单分页删除、字段集收敛并收进 contract.json。
 # 6.3 = 单入口检索(ADR-0013):kd ask 删除、公开面收敛为 search/read + 三异常、零算法排序。
-VERSION = "6.8"
+VERSION = "6.9"
 
 # 实体类型白名单:read 的 --kind 共用此集合(原 search 的 --type 已删除)。
 # ⚠️ 第三个值是 `question` 而**不是上游协议里的 `answer`**(决策 D5):上游
@@ -63,7 +76,8 @@ VERSION = "6.8"
 # ⚠️ **第四个值是 `other`**(2026-09-29,工单 #32):收容 3 个已知值之外的每一种
 # 上游 `entity-type`(实测至少还有 `LearningCourse` / `LearningPath` /
 # `KnowledgeSpecial` / `LearningBroadcast`)。在此之前它们被 `_norm_item`
-# **静默丢弃** —— 搜「微课」得到 `total: 212` 而 `results` 只 2 条,且无任何错误信号。
+# **静默丢弃** —— 搜「微课」得到 `total: 212` 而 `results` 只 2 条(该顶层字段自 v6.9
+# 起已删除,此处是当时实测的返回体),且无任何错误信号。
 # ⚠️ `other` 是**合法 kind**(清单里会出现它,故 `read` 不能拿它当非法值),
 # 但它的全文端点**不存在**(上游各类型的详情端点形状不一,`LearningPath` 无端点、
 # `LearningBroadcast` 在第三方域),故 `read(kind="other")` 须给出**准确**的提示,
@@ -106,6 +120,18 @@ def _contract():
     `contract_loaded()` 供返回体标注(`contractCfgLoaded`)。
     """
     global _CONTRACT, _CONTRACT_OK
+    # ⚠️ **声明只在本进程的首次读盘时进缓存**(`_CONTRACT is None` 只成立一次)。
+    # 由此有一条**刻意保留、不是 bug** 的进程内不对称(2026-10-01,D1):
+    #   * "**不传** `product_id`" 用的是**签名默认值**(`_public` 的
+    #     `_DEFAULT_PRODUCT_ID = default_product_id()`),它是 **import 期**求值的快照;
+    #   * "**显式传** `None`" 走 `_norm_product_id` → **调用期**现读 `default_product_id()`。
+    # 两者在进程内**不同源** —— 但生产上根本看不见:进程内改 `contract.json` 不会被
+    # 任何人读到(本函数已把声明缓存住),CLI 每次调用又都是新进程;要构造出这个分叉,
+    # 必须**手动清掉 `_CONTRACT`** 再调用(报告里那次实测正是测试构造)。
+    # 故**不要**"修"它:退回 import 快照会让 `default_product_id()` 重新变成零消费者的
+    # 函数(违反本仓「声明必须有消费者,否则'单一来源'是假的」),改用哨兵默认值又会
+    # 撞红断言「签名默认值必须等于声明默认值」。ADR-0016 决策 3 那句"不传与传 `None`
+    # 同义"在**进程之外完全成立**。
     if _CONTRACT is None:
         try:
             with open(_CONTRACT_PATH, encoding="utf-8") as f:
@@ -198,10 +224,39 @@ _FALLBACK_FORBIDDEN_KEYS = ("contentText", "fusedScore", "chunks", "contentLen",
 _FALLBACK_MAX_KEYWORDS = 7
 _FALLBACK_BURST = 7
 _FALLBACK_MAX_DETAIL = 5
-_FALLBACK_TOP_KEYS = ("ok", "keywords", "total", "queries", "routesPlanned",
+_FALLBACK_TOP_KEYS = ("ok", "keywords", "queries", "routesPlanned",
                       "effectiveProductId", "results", "otherSkipped",
                       "routeErrors", "keywordsDropped", "scanNote", "contractCfgLoaded",
                       "stats")
+
+# ---- read 侧的**内置兜底键集**(2026-10-01,D12):仅在 contract.json 缺失/无 `read` 段时生效 ----
+# 与 search 侧同纪律(见上面那段论证):键集是渲染细节,不是安全闸,为它中断深读
+# 等于让一个数据文件决定套件能否工作。故只回落、不抛错。
+# ⚠️ **三档的真实产出键集**(2026-10-01 逐档实测登记,不是照抄 tests 里手写的那份):
+#   knowledge: ok id type title contentText url products updatedAt (+stats)
+#   question : 公共段 + isSolved answersCount views rewardCoins createdAt
+#              answersTaken answersTotal (+ 条件键 bestAnswer/truncated/answers)(+stats)
+#   article  : 公共段 + supports views (+stats)
+# ⚠️ `other` 档**不在** `_FALLBACK_READ_BY_TYPE_KEYS` 里:它是合法 kind 但没有全文
+# 端点(`_detail` 抛 `unsupported_kind`),read 的键集里不存在这一档。
+# ⚠️ 兜底集必须与 contract.json 的 `read` 段保持一致 —— 由离线回归用例钉住
+# (`t_read_keys_vs_real_output` 的 ① 段同时读两边),不靠人工誊抄。
+_FALLBACK_READ_TOP_KEYS = ("ok", "id", "type", "title", "contentText", "url",
+                           "products", "updatedAt", "stats")
+_FALLBACK_READ_BY_TYPE_KEYS = {
+    "knowledge": (),
+    "question": ("isSolved", "answersCount", "views", "rewardCoins", "createdAt",
+                 "answersTaken", "answersTotal"),
+    "article": ("supports", "views"),
+}
+# **条件键**:有才留(`bestAnswer` 依赖上游给了采纳答案、`truncated` 依赖发生截断、
+# `answers` 依赖 `with_answers` 分支)。它们与"恒在键"同属投影白名单,只是**不保证出现**。
+_FALLBACK_READ_CONDITIONAL_BY_TYPE = {"question": ("bestAnswer", "truncated", "answers")}
+# `truncated` 的两值枚举(见 contract.json 的 `read.note_truncatedValues`)。
+# 具名映射而**不是**有序元组:代码里要按语义取值(`["answerLimit"]`),靠下标
+# 取第二值会把"枚举顺序"变成隐式契约(改动顺序即静默改语义)。
+_FALLBACK_READ_TRUNCATED_VALUES = {"answerLimit": "answer_limit",
+                                   "upstreamError": "upstream_error"}
 # `other` 档的**开关状态**:由 `_search_manifest` 的 `include_other` 形参控制,
 # 不经环境变量(与"删掉 KSEARCH_RATE 等隐式通路"的纪律一致)。
 
@@ -251,6 +306,68 @@ def top_keys():
     """
     keys = ((_contract().get("search") or {}).get("topKeys") or list(_FALLBACK_TOP_KEYS))
     return tuple(str(k) for k in keys)
+
+
+def read_keys(kind=None):
+    """read 返回体**允许出现**的键集(从 contract.json 的 `read` 段取)。
+
+    这是 `read` 侧声明段的**生产消费者**(2026-10-01,D12):`_detail.project_read`
+    按它投影三档返回体 —— 声明里没列的键**一律不出现在最终返回体**,这就是
+    「声明即闸门」的机制(有回归钉子:`t_read_keys_vs_real_output` 的注入段)。
+
+    `kind=None` → **公共键集**(三档恒在的键);给 kind → 公共 + 该档专属恒在键
+    **+ 该档条件键**。条件键必须并入:`bestAnswer`/`truncated`/`answers` 与恒在键
+    同属白名单,只是不保证出现;漏并入它们会让投影**静默丢掉**这几个键
+    (那正是本仓最忌的"一处静默换另一处静默")。
+
+    ⚠️ 与 `result_keys()` 同纪律:读取失败/类型未知一律回落内置兜底集,**不抛错**。
+
+    ⚠️ **`other` 档落到的是"仅公共键"**:它是合法 kind 但没有全文端点
+    (`_detail` 抛 `unsupported_kind`),故上述兜底对它是**不可达分支**;写成通用回落
+    是为了让本函数对任何 kind 都不抛错(与 `link_for` 的"未知 kind → 保守值"同口径)。
+    """
+    r = _contract().get("read") or {}
+    keys = r.get("topKeys") or list(_FALLBACK_READ_TOP_KEYS)
+    keys = [str(k) for k in keys]
+    if kind is not None:
+        k = str(kind)
+        for section, fallback in (
+                ("keysByType", _FALLBACK_READ_BY_TYPE_KEYS),
+                ("conditionalByType", _FALLBACK_READ_CONDITIONAL_BY_TYPE)):
+            by = r.get(section)
+            by = by if isinstance(by, dict) else fallback
+            extra = by.get(k)
+            if extra is None:
+                extra = fallback.get(k) or ()
+            keys += [str(x) for x in extra]
+    return tuple(keys)
+
+
+def read_truncated_values():
+    """read(question) 的 `truncated` **字符串枚举两值**(从 contract.json 的 `read` 段取)。
+
+    具名映射(而**不是**有序元组):调用方按语义取值(`["answerLimit"]`),靠下标
+    取第二值会把"枚举顺序"变成隐式契约 —— 声明里改个顺序就静默改了语义。
+
+    ⚠️ 2026-10-01(D12):这两值原先在 `_question_detail` 里各写一遍字面量,而枚举表
+    (docstring / ANSWER-SPEC / ADR-0016 决策 7)是它们唯一的语义说明 —— 改枚举要同时
+    改四处,没人盯得住。现在单一来源是声明,代码经本函数取(有回归钉子:改声明里的
+    值 → 真实输出的 `truncated` 跟着变)。
+
+    ⚠️ **逐键回落,不整份丢、不抛错**(与 `_burst_of` 同纪律):声明里只写了一半时,
+    另一半仍取兜底值 —— 声明里的坏值不该让深读主链路崩溃。
+    """
+    out = dict(_FALLBACK_READ_TRUNCATED_VALUES)
+    try:
+        v = (_contract().get("read") or {}).get("truncatedValues")
+        if isinstance(v, dict):
+            for name in out:
+                got = v.get(name)
+                if got:
+                    out[name] = str(got)
+    except Exception:
+        return dict(_FALLBACK_READ_TRUNCATED_VALUES)
+    return out
 
 
 def link_policy():

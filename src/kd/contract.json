@@ -1,9 +1,9 @@
 {
-  "version": "v6.8",
-  "note": "kd 对外返回体的**单一来源**(决策 D13,2026-09-27)。这里只写一次字段集与编号表;代码读它拼返回体,测试从它派生断言,文档指向它而不是各写一份。**不写生成脚本、不加守卫、不动 CI** —— 它治的是'抄六遍'的病:不改就没痛,只在改动那一刻出事,而那一刻没有任何信号(活证据:SKILL.md:245 与 ANSWER-SPEC:23 的链接口径正面对撞;d753719 删 3 个字段后测试计数没跟上)。与守卫(事后抓、要维护、会误报)的区别是它**事前只有一处**。读取失败一律回落空表,不炸。⚠️ v6.6 起它同时是**包内唯一数据文件**:拆词规则删除后 query_routes.json 整体删除(ADR-0016),其路数上限与限速档并入本文件的 limits 段。 ⚠️ v6.7(2026-09-29)破坏性变更:顶层删 routesDegraded、新增 otherSkipped;清单新增 other 档;question 的 url 改长形式且 linkPolicy.question 由 no-link 改 link;limits.rate 上调为 burst 7/rps 5;limits 新增 maxDetail。",
+  "version": "v6.9",
+  "note": "kd 对外返回体的**单一来源**(决策 D13,2026-09-27)。这里只写一次字段集与编号表;代码读它拼返回体,测试从它派生断言,文档指向它而不是各写一份。**不写生成脚本、不加守卫、不动 CI** —— 它治的是'抄六遍'的病:不改就没痛,只在改动那一刻出事,而那一刻没有任何信号(活证据:SKILL.md:245 与 ANSWER-SPEC:23 的链接口径正面对撞;d753719 删 3 个字段后测试计数没跟上)。与守卫(事后抓、要维护、会误报)的区别是它**事前只有一处**。读取失败一律回落空表,不炸。⚠️ v6.6 起它同时是**包内唯一数据文件**:拆词规则删除后 query_routes.json 整体删除(ADR-0016),其路数上限与限速档并入本文件的 limits 段。 ⚠️ v6.7(2026-09-29)破坏性变更:顶层删 routesDegraded、新增 otherSkipped;清单新增 other 档;question 的 url 改长形式且 linkPolicy.question 由 no-link 改 link;limits.rate 上调为 burst 7/rps 5;limits 新增 maxDetail。 ⚠️ v6.9(2026-10-01)**破坏性变更**:顶层删除 `total`(它没有任何可行动的用法,而自家文档明写「比对检索效果只看金标位次」——留一个被自家文档劝退的字段,等于给调用方一个不该读的数);连带删除 `_route_search_once` 的 `totalElements` 读取链。理由详见 `search.note_totalRemoved`。",
   "search": {
     "note": "kd search 清单返回体的键集。results[] 是**帖子级**条目(ADR-0014):同一帖的多条回答在上游是多个条目,清单里合并为一条,回答数走 answersCount 原生信号。",
-    "note_resultKeys": "字段集按**实测可达性**分三份(ADR-0016 决策 6):公共部分在前,类型专属在后。类型不适用的键**直接不出现在该条目上**(而非填 null)——『结构性不适用』(知识文档永远没有回答数)与『上游没给值』是两件事,混成 null 会让调用方分不清。 ⚠️ 2026-09-29 新增 `other` 档(工单 #32):收容 3 个已知值之外的每一种上游 entity-type。它带两个专属键 —— `upstreamType`(上游原始 entity-type,如 LearningCourse)**必须保留**:对外只有一个 other,丢掉原值就等于把『认得出但不当一类』又变回『看不出是什么』;`resourceType`(video/document/ppt)是课程类常见形态。",
+    "note_resultKeys": "字段集按**实测可达性**分**四份**(ADR-0016 决策 6;2026-10-01 更正:原写「三份」,`other` 档加入后实际是四份 —— knowledge / question / article / other,公共键为四份共用):公共部分在前,类型专属在后。类型不适用的键**直接不出现在该条目上**(而非填 null)——『结构性不适用』(知识文档永远没有回答数)与『上游没给值』是两件事,混成 null 会让调用方分不清。 ⚠️ 2026-09-29 新增 `other` 档(工单 #32):收容 3 个已知值之外的每一种上游 entity-type。它带两个专属键 —— `upstreamType`(上游原始 entity-type,如 LearningCourse)**必须保留**:对外只有一个 other,丢掉原值就等于把『认得出但不当一类』又变回『看不出是什么』;`resourceType`(video/document/ppt)是课程类常见形态。",
     "resultKeysCommon": [
       "type",
       "id",
@@ -42,10 +42,10 @@
       "questionId"
     ],
     "note_contractCfgLoaded": "⚠️ 声明读失败必须在返回体里可见(ADR-0016 决策 7,v6.6 审查补)。`contract.json` 读失败时,`_config._contract()` 回落空表 → 链接政策回落『全部不给链接』→ **全部 url 静默变 null**,而返回体只写 stderr。调用方拿到的是一份结构合法、字段齐全、url 全空的清单,无法区分『官方这些条目没有链接』与『内核没读到声明』。故顶层显式标注配置来源:true = 声明读到了。它也是『声明有消费者』的又一例(声明在,这个键才有意义)。",
+    "note_totalRemoved": "⚠️ v6.9(2026-10-01)**破坏性变更**:顶层删除 `total`(`topKeys` 与代码内置兜底键集同步删除,真实输出跟着消失)。理由 —— **它没有任何可行动的用法**:`SKILL.md` 明写「比对检索效果只看金标位次,不看 `total`」;而它是**各路上游 `totalElements` 的最大值**,既不是清单长度、也不是过滤后该类型的条数(实测 `total: 74` 而 `results: []`),读它只会得出错误结论。留一个被自家文档劝退的字段 = 给调用方一个不该读的数。差额解释的载体改为:`results` 长度 + `otherSkipped` + `keywordsDropped` + `routeErrors`。连带删除:`_route_search_once` 读 `totalElements` 那一段(顶层 `total` 是它唯一的消费者,删完就成『生产者无消费者』,与 `total` 同病灶)。⚠️ `answersTotal`(read 侧)是**另一个概念**,不动。",
     "topKeys": [
       "ok",
       "keywords",
-      "total",
       "queries",
       "routesPlanned",
       "effectiveProductId",
@@ -59,6 +59,52 @@
     ],
     "note_otherSkipped": "⚠️ 2026-09-29 新增(工单 #32):被**隐藏掉**的 other 档条数。『隐藏』是默认行为(用户裁定:这些类型质量低,得与前三档区分开),但隐藏**必须可见** —— 否则就是用一处静默换另一处静默。0 = 没跳过任何条(或开关已开)。",
     "note_routesDegradedRemoved": "⚠️ 2026-09-29(工单 #33,用户裁定)删除 `routesDegraded`:原报『路数塌缩 N→M(调用方给了重复词)』,而实测报得**不一致**——`A B A`(3 词 1 重复)会报,`A…G A`(8 词 1 重复)只字不提,同一原因时而报时而不报。用户口径:「重复的就不要提示了,非重复的超上限的提示」。按此口径 `keywordsDropped` 的现有算法(去重后词数 − 上限)**恰好是对的**,保留;撤掉的是重复词那一支。⚠️ 留一个恒 false 的键是『死机制』,与本仓『不留占位、不承诺不存在的能力』冲突,故**整套删除**而非置 false。⚠️ **去重本身保留**:不得对同一 query 发两次上游请求。"
+  },
+  "read": {
+    "note": "kd read 全文返回体的键集(2026-10-01 新增,D12)。此前 read 侧的键集**只活在代码字面量里** —— `_knowledge_article` / `_question_detail` / `_article_detail` 各自手写 dict,回归用例里又手抄了第二份(`READ_KEYS`/`READ_QUESTION_*`),于是『read 返回什么字段』没有任何单一来源,改了不会有任何信号。本段就是那份单一来源:代码读它拼返回体(`_detail.project_read` 按 kind 投影),用例从它派生断言。⚠️ 本段**不改对外行为** —— 它把三档的**真实产出键集**逐一登记在案(等价重构),不是新增或删除字段;唯一的运行期效果是『声明里删一个键 → 真实输出跟着少一个』(有回归钉子)。⚠️ 与 `search` 段的形状差异是**结构差异**,不是疏漏:read 只有**一层**返回体(没有『顶层 + 条目』两层),故 `topKeys` = 三档恒在的公共键、`keysByType` = 该档专属的恒在键、`conditionalByType` = 有才留的条件键。⚠️ `keysByType` 里**没有 `other` 档** —— 它是合法 kind 但内核没有全文端点(`_detail` 抛 `unsupported_kind`),故 read 的键集里不存在这一档。",
+    "note_conditional": "条件键(2026-10-01):`bestAnswer` 只在上游给了采纳答案时出现;`answers` 只在 `with_answers` 分支(生产 `read` 恒走该分支)出现;`truncated` 只在发生截断时出现。⚠️ 它们**不是被填成 `null` 的占位** —— 『结构性不适用』与『这次没取到』是两件事,与 `search` 段同口径;`answersTaken`/`answersTotal` 则**恒在**(它们与 `answers` 同批构造,声明里归 `keysByType`)。",
+    "note_statsInjection": "⚠️ `stats` 的**注入时机**决定了投影必须调用两次(2026-10-01):`_public.read` 在 `_detail` 返回**之后**才注入 `stats`,故 `_detail` 里那一次投影看不到它 —— 必须在 `_public.read` 注入之后再投影一次。否则从声明删 `stats` 时真实输出仍带着它,声明对这一个键就没有约束力。与 `search` 侧 `project_top` 被调用两次(`_search_manifest` 返回前一次、`_public.search` 注入 `stats` 之后一次)同构。",
+    "note_keyOrder": "⚠️ 投影控制的是**键集**而不是**键序**:read 的三档里公共键被专属键**插开**(question 档的 `products` 夹在 `rewardCoins` 与 `createdAt` 之间),若按『声明顺序拼接』产出就会重排键序 —— 那是可观测的对外变化(JSON 键序),而本段定位是『把既有事实收成单一来源』,不改行为。故投影按**返回体自身顺序**过滤(论证见 `_detail.project_read`)。",
+    "topKeys": [
+      "ok",
+      "id",
+      "type",
+      "title",
+      "contentText",
+      "url",
+      "products",
+      "updatedAt",
+      "stats"
+    ],
+    "keysByType": {
+      "knowledge": [],
+      "question": [
+        "isSolved",
+        "answersCount",
+        "views",
+        "rewardCoins",
+        "createdAt",
+        "answersTaken",
+        "answersTotal"
+      ],
+      "article": [
+        "supports",
+        "views"
+      ]
+    },
+    "conditionalByType": {
+      "question": [
+        "bestAnswer",
+        "truncated",
+        "answers"
+      ]
+    },
+    "truncatedValues": {
+      "answerLimit": "answer_limit",
+      "upstreamError": "upstream_error"
+    },
+    "note_truncatedValues": "read(question) 的 `truncated` 字符串枚举**两值**(ADR-0016 决策 7,v6.6)。此前这两个值在 `_question_detail` 里各写一遍字面量,而枚举表(docstring / ANSWER-SPEC / ADR)是它们唯一的语义说明 —— 改枚举要同时改四处,没人盯得住。收进声明后单一来源是这里,代码经 `_config.read_truncated_values()` 取。⚠️ 两值必须分开:`answer_limit` = 『资料就这么多,接受现状并在答案里声明』;`upstream_error` = 『上游坏了,该重试』。压成同一个值会让召回置信度判定在最该保守的时候给出乐观结论。",
+    "note_consumer": "⚠️ 本段**必须有生产消费者**(本仓硬纪律:「声明必须有消费者,否则『单一来源』是假的」——新增声明段没有真消费者就是本仓点名批评过的病)。两个消费者:① `_detail.project_read` 按 `read_keys(kind)` 投影三档返回体(声明里没列的键一律不出现在最终返回体 —— 这就是『删声明即删输出』的机制);② `_question_detail` 的 `truncated` 两个枚举值经 `_config.read_truncated_values()` 取,代码里不再出现 `\"answer_limit\"` / `\"upstream_error\"` 字面量。读取失败一律回落 `_config` 的内置兜底集(`_FALLBACK_READ_*`),不抛错。"
   },
   "limits": {
     "note": "内核自己的运行参数(非对外契约)。拆词规则删除后(ADR-0016)本文件是包内唯一数据文件——原 query_routes.json 只剩『路数上限』与『限速档』两个仍有效值,预算段随预算机制一并删除(每路恒 1 次请求,预算不可触发)。",
@@ -90,7 +136,7 @@
     },
     "evidence": {
       "note": "编号的**实测依据**。查这个表是为了回答'凭什么说 2 是存在的一条线'——不要靠猜。",
-      "2": "2026-09-28 复测:「插件开发」下 --product 2 返回 10/10 全 question,87 同词返回 14 条里仅 2 条是问答;「账表开发」下 2 返回 9/9 全 question,87 首条是 knowledge。**可执行判据是'返回条目类型恒为问答帖'**,不是某条 total 数值(total 随语料漂移,早期记录的 611 是未带 --type 过滤时的口径)。详见 SKILL.md 的「产品线语义识别」②。",
+      "2": "2026-09-28 复测:「插件开发」下 --product 2 返回 10/10 全 question,87 同词返回 14 条里仅 2 条是问答;「账表开发」下 2 返回 9/9 全 question,87 首条是 knowledge。**可执行判据是'返回条目类型恒为问答帖'**,不是某条候选集规模数值(该规模随语料漂移,且顶层返回值自 v6.9 起已不含它;早期记录的 611 是未带 --type 过滤时的口径)。详见 SKILL.md 的「产品线语义识别」②。",
       "87": "苍穹侧开发/配置类语料,knowledge+article+question 混排;类目为 `金蝶AI苍穹`。",
       "1": "星空企业版/标准版。2026-09-06 串线事故(ENG_BOM/T_ENG_BOM 被当作旗舰版输出)的另一侧语料。",
       "93": "默认。不带过滤时召回质量在中文语料上显著更差(实测同 query 不带过滤 GlobalEase 相关文档零命中)。"
