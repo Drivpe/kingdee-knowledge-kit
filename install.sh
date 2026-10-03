@@ -3,12 +3,16 @@
 #
 # 用法: bash install.sh [--root DIR] [--no-path] [--no-skills] [--no-verify]
 #                    [--harness workbuddy,zcode,opencode,pi,agents]
+#        管道形式: curl -fsSL .../install.sh | bash [-s -- <同样的开关>]
 #
 # 两条路径(工单 #24):
 #   主推 —— pipx(有 Python 环境时):  pipx install kingdee-knowledge-kit
 #           由 pyproject.toml 的 [project.scripts] 提供 `kd`,升级/卸载交给 pipx 管。
 #   兜底 —— 本脚本(无 Python 3 / Windows 双击 / 离线 / 要连技能一起装):
 #           把 src/kd 拷进 $ROOT/lib,在 $ROOT/bin 生成可执行的 kd 启动器。
+#           ⚠️ 本脚本**自身不含源码**:库体(src/kd)、技能(skills/)、验证闸门
+#           (tests/kd_regression.py)都从**检出目录**取,故它先自己找检出目录
+#           —— 见下方「仓库根发现」;管道形式没有"脚本所在目录",会先浅克隆。
 #
 # 效果: kd CLI 装到 ~/.kingdee-kit,bin 加入 shell rc,技能装到 ~/.agents/skills
 #       (workbuddy/zcode/opencode/pi 用软链挂同一份),最后跑装机自检。
@@ -28,7 +32,80 @@ while [ $# -gt 0 ]; do
     *) echo "未知参数: $1"; exit 2;;
   esac
 done
-REPO="$(cd "$(dirname "$0")" && pwd)"
+REPO=""
+REPO_URL="https://github.com/Drivpe/kingdee-knowledge-kit.git"
+TMP_REPO=""
+cleanup() { [ -n "$TMP_REPO" ] && rm -rf "$TMP_REPO"; return 0; }
+trap cleanup EXIT INT TERM HUP
+
+# 仓库根发现(工单 I1):原先这里只有一行 `REPO="$(cd "$(dirname "$0")" && pwd)"`,
+# 它在管道形式(curl … | bash)下把 $0 解析成 "bash",dirname 得到当前目录 —— 于是
+# REPO 指向 $PWD,第一步 `cp -r "$REPO/src/kd"` 直接报
+# `cp: cannot stat '.../src/kd'` 并 exit 1。用户看到的是 cp 的抱怨,拿不到任何
+# "该怎么装"的信息,而这段管道命令正是 README 列为一等公民的形式。
+# 故改为三级探测,任一级命中都比"半截失败"好:
+#   ① 脚本自身所在目录(在检出目录里原地运行 —— 稳态用法)
+#   ② 当前目录(管道形式下若恰好在检出目录内,同样成立)
+#   ③ 浅克隆到临时目录(管道形式的兜底;需要 git + 能访问 GitHub)
+# 三级都落空 ⇒ 打印可行动的用法后以非 0 退出(绝不继续跑半截流程)。
+_self="${BASH_SOURCE[0]:-$0}"
+if [ -n "$_self" ] && [ -f "$_self" ]; then
+  _d="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || _d=""
+  if [ -n "$_d" ] && [ -d "$_d/src/kd" ]; then REPO="$_d"; fi
+fi
+if [ -z "$REPO" ] && [ -d "$PWD/src/kd" ]; then REPO="$PWD"; fi
+if [ -z "$REPO" ] && command -v git >/dev/null 2>&1; then
+  echo "[install] 未在检出目录内运行,先把仓库浅克隆到临时目录(装完即删)"
+  _tmp="$(mktemp -d 2>/dev/null)" || _tmp=""
+  # 克隆必须**有界且不交互**:
+  #   * GIT_TERMINAL_PROMPT=0 —— 仓库不可达/私有/需要凭据时,git 默认会弹用户名密码提示,
+  #     在"一键脚本"里那就是一个永远等不到输入的挂起;关掉提示,失败得干脆。
+  #   * timeout —— 实测本机到 GitHub 会间歇性挂住(同一条命令有时 0.3s 返回、有时 30s 无响应),
+  #     而"逐字节复制一个不会动的终端"比报错更糟。macOS 自带的是 gtimeout(装了 coreutils 才有),
+  #     两者都没有时才不限时 —— 此时仍受 GIT_TERMINAL_PROMPT=0 保护。
+  if command -v timeout >/dev/null 2>&1; then _TO="timeout 90"
+  elif command -v gtimeout >/dev/null 2>&1; then _TO="gtimeout 90"
+  else _TO=""; fi
+  if [ -n "$_tmp" ] && GIT_TERMINAL_PROMPT=0 $_TO git clone --depth 1 --quiet "$REPO_URL" "$_tmp"; then
+    # 克隆到的东西也要过一遍"布局对不对"这道门:远程落后于本脚本的期望布局时
+    # (实测存在:远程 HEAD 停在 v6.3,src/kd 下放的是 v6.6 已删除的 query_routes.json
+    # 而不是 contract.json),收下它只会把失败推迟到下一步,变成"缺 lib/kd/contract.json"
+    # 这种看起来像仓库坏了的报错。故这里直接判死并回落,由下面的用法块告诉用户该怎么做。
+    if [ -d "$_tmp/src/kd" ] && [ -f "$_tmp/src/kd/contract.json" ]; then
+      TMP_REPO="$_tmp"; REPO="$_tmp"
+    else
+      echo "[install] ✗ 克隆到的检出不含 src/kd/contract.json —— 该远程分支与本脚本期望的布局不一致(通常是远程未同步到本版本),不收下这棵树" >&2
+      rm -rf "$_tmp"
+    fi
+  else
+    [ -n "$_tmp" ] && rm -rf "$_tmp"
+  fi
+fi
+if [ -z "$REPO" ]; then
+  cat >&2 <<'USAGE_EOF'
+[install] ✗ 找不到仓库检出目录:既不是从检出目录内运行,也没能克隆到仓库。
+
+  本脚本自身不含源码 —— 库体在 <检出目录>/src/kd、技能在 <检出目录>/skills、
+  「离线组全绿才放行」的验证闸门在 <检出目录>/tests/kd_regression.py。
+  所以必须有一个可用的检出目录,管道形式也必须能把它取回来。
+
+  正确用法(任选其一):
+    1) 先克隆再原地运行(推荐;离线机器也适用):
+         git clone --depth 1 https://github.com/Drivpe/kingdee-knowledge-kit.git
+         cd kingdee-knowledge-kit && ./install.sh
+    2) 在已有的检出目录内运行(路径按你本地实际位置替换):
+         bash /path/to/kingdee-knowledge-kit/install.sh
+    3) 管道形式(需要 git 且能访问 GitHub —— 脚本会自己浅克隆到临时目录):
+         curl -fsSL https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.sh | bash
+       ⚠️ 管道下发的是**远程那一版**脚本:远程未同步时拿到的是旧脚本,本脚本的探测
+          逻辑根本不参与 —— 那种情况请走 1)。
+
+  想跳过验证闸门不足以绕过本错误:闸门读的 tests/ 与被装的 src/kd 同属一个检出目录。
+USAGE_EOF
+  exit 1
+fi
+echo "[install] 检出目录: $REPO"
+
 command -v python3 >/dev/null 2>&1 || { echo "需要 python3 (3.8+)"; exit 1; }
 echo "[install] python3: $(command -v python3)"
 echo "[install] 安装到 $ROOT"
@@ -146,8 +223,14 @@ fi
 if [ "$NO_VERIFY" -eq 0 ]; then
   echo "[install] 冒烟验证:$ROOT/bin/kd health"
   "$ROOT/bin/kd" health >/dev/null || { echo "[install] ✗ kd 装出来后无法执行,装机失败" >&2; exit 1; }
-  echo "[install] 装机自检:tests/kd_regression.py(离线组,不联网)"
-  python3 "$REPO/tests/kd_regression.py" || {
+  # 闸门路径取自上面探测到的 $REPO(不是 $0、也不是 $PWD),故原地运行与管道+浅克隆
+  # 两种形态下都指向同一个检出目录。仍然显式校验存在性:缺 tests/ 时给一句人话,
+  # 而不是让 python 抛 FileNotFoundError —— 闸门读不到就是"没放行",不可能是通过。
+  REGRESSION="$REPO/tests/kd_regression.py"
+  [ -f "$REGRESSION" ] || {
+    echo "[install] ✗ 检出目录缺 $REGRESSION,无法执行「离线组全绿才放行」那道闸门" >&2; exit 1; }
+  echo "[install] 装机自检:$REGRESSION(离线组,不联网)"
+  python3 "$REGRESSION" || {
     echo "[install] ✗ 回归未全绿,检查上方 FAIL 项" >&2; exit 1; }
   echo "[install] ✓ kd 可执行且回归通过"
 fi

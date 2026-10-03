@@ -24,16 +24,115 @@ param(
     [string]$Harness = "all"
 )
 $ErrorActionPreference = "Stop"
-$Repo = $PSScriptRoot
+$Repo = $PSScriptRoot      # 占位;真正的取值在下面「仓库根发现」里做,并且会校验布局
 $Bin = Join-Path $InstallRoot "bin"
 
 function Step($msg) { Write-Host "[install] $msg" }
+
+# 仓库根发现(工单 I1,与 install.sh 对称):本脚本自身不含源码 —— 库体在 src\kd、
+# 技能在 skills\、验证闸门在 tests\kd_regression.py,三处都从**检出目录**取。
+# 原先这里只有一行 `$Repo = $PSScriptRoot`。而 `irm … | iex` 形态下 $PSScriptRoot
+# 是**空的**(代码直接从字符串执行,没有脚本文件 —— PS 5.1 实测 `$PSScriptRoot=[]`),
+# 于是 $Repo 为空,后面 Join-Path $Repo "src\kd" 拼出的相对路径按**当前目录**解析,
+# 失败时报的是 Copy-Item 的"找不到路径"。而这个形态正是 README 列为一等公民的形式,
+# 用户拿不到任何"该怎么装"的信息。故改为三级探测(任一命中都比"半截失败"好):
+#   ① $PSScriptRoot(在检出目录里原地运行 —— 稳态用法)
+#   ② 当前目录(iex 形态下若恰好在检出目录内,同样成立)
+#   ③ 浅克隆到临时目录(iex 形态的兜底;需要 git + 能访问 GitHub)
+# 三级都落空 ⇒ 打印可行动的用法后以非 0 退出,并清掉临时目录。
+$RepoUrl = "https://github.com/Drivpe/kingdee-knowledge-kit.git"
+$TempRepo = $null
+
+# 期望布局 = src\kd 与 src\kd\contract.json 都在。缺 contract.json 的树是旧版
+# (实测:远程 HEAD 曾在 src\kd 下放 v6.6 已删除的 query_routes.json),收下它只会把
+# 失败推迟到「缺 lib\kd\contract.json」,看起来像仓库坏了 —— 那就不是"可行动的报错"了。
+function Test-RepoLayout($p) {
+    if (-not $p) { return $false }
+    if (-not (Test-Path (Join-Path $p "src\kd"))) { return $false }
+    return (Test-Path (Join-Path $p "src\kd\contract.json"))
+}
+
+# 失败一律走这里:临时克隆必须被清掉(装机失败还留一个临时目录是二次事故)。
+function Fail($msg) {
+    Write-Host "[install] ✗ $msg" -ForegroundColor Red
+    if ($TempRepo -and (Test-Path $TempRepo)) {
+        Remove-Item $TempRepo -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    exit 1
+}
+
+# 兜底:$ErrorActionPreference=Stop 下的终止性错误也要先清临时目录再退出。
+trap {
+    if ($TempRepo -and (Test-Path $TempRepo)) {
+        Remove-Item $TempRepo -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "[install] ✗ 未预期的错误:$($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+if (Test-RepoLayout $PSScriptRoot) { $Repo = $PSScriptRoot }
+if (-not (Test-RepoLayout $Repo) -and (Test-RepoLayout (Get-Location).Path)) {
+    $Repo = (Get-Location).Path
+}
+if (-not (Test-RepoLayout $Repo) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+    Step "未在检出目录内运行,先把仓库浅克隆到临时目录(装完即删)"
+    $Repo = $null
+    $gitExe = (Get-Command git).Source
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("kd-repo-" + [Guid]::NewGuid().ToString("N"))
+    # 克隆必须**有界且不交互**:
+    #   * GIT_TERMINAL_PROMPT=0 —— 仓库不可达/私有/需要凭据时 git 会弹凭据提示,
+    #     在"一键脚本"里那就是一个永远等不到输入的挂起;关掉提示,失败得干脆。
+    #   * 90 秒封顶 —— 实测到 GitHub 的连通性会间歇性挂住(同一命令有时秒回、
+    #     有时几十秒无响应),而一个不会动的终端比报错更糟。超时即杀进程。
+    #   * 判"克隆成功"只看**落地的东西能不能用**(Test-RepoLayout),不读进程退出码:
+    #     PS 5.1 实测 Start-Process -PassThru 拿到的对象在进程退出后 **ExitCode 恒为空**
+    #     (`exited=True exit=`,clone 明明成功),拿它判成功会让这条兜底在 Windows 上
+    #     恒不成立 —— 一个只会走失败路径的兜底等于没有。
+    $env:GIT_TERMINAL_PROMPT = "0"
+    try {
+        $proc = Start-Process -FilePath $gitExe `
+            -ArgumentList @("clone", "--depth", "1", "--quiet", $RepoUrl, $tmp) `
+            -NoNewWindow -PassThru
+        if (-not $proc.WaitForExit(90000)) { $proc.Kill() }
+    } catch {
+        # 起不来与超时同路:都按"没克隆到"处理,由下面的布局判据收口。
+    }
+    if (Test-RepoLayout $tmp) {
+        $Repo = $tmp; $TempRepo = $tmp
+    } else {
+        if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+        $Repo = $null
+    }
+}
+if (-not (Test-RepoLayout $Repo)) {
+    Write-Host @"
+[install] ✗ 找不到仓库检出目录:既不是从检出目录内运行,也没能克隆到仓库。
+
+  本脚本自身不含源码 —— 库体在 <检出目录>\src\kd、技能在 <检出目录>\skills、
+  「离线组全绿才放行」的验证闸门在 <检出目录>\tests\kd_regression.py。
+  所以必须有一个可用的检出目录,iex 形态也必须能把它取回来。
+
+  正确用法(任选其一):
+    1) 先克隆再原地运行(推荐;离线机器也适用):
+         git clone --depth 1 https://github.com/Drivpe/kingdee-knowledge-kit.git
+         cd kingdee-knowledge-kit
+         powershell -ExecutionPolicy Bypass -File install.ps1
+    2) 在已有的检出目录内运行(路径按你本地实际位置替换):
+         powershell -ExecutionPolicy Bypass -File D:\path\to\kingdee-knowledge-kit\install.ps1
+    3) iex 形态(需要 git 且能访问 GitHub —— 脚本会自己浅克隆到临时目录):
+         irm https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.ps1 | iex
+       ⚠️ iex 下发的是**远程那一版**脚本:远程未同步时拿到的是旧脚本,本脚本的探测
+          逻辑根本不参与 —— 那种情况请走 1)。
+"@ -ForegroundColor Red
+    Fail "没有检出目录,装机中止"
+}
+Step "检出目录: $Repo"
 
 # 1. Python 探测(仅用于兜底启动器;pipx 路径不需要本脚本)
 $pyCmd = $null
 if (Get-Command py -ErrorAction SilentlyContinue) { $pyCmd = "py" }
 elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyCmd = "python" }
-else { Write-Host "[install] 需要 Python 3.8+(未检测到 py/python)" -ForegroundColor Red; exit 1 }
+else { Fail "需要 Python 3.8+(未检测到 py/python)" }
 Step "python: $pyCmd"
 
 # 2. 库体 + 启动器
@@ -49,7 +148,7 @@ if (-not $DryRun) {
     # 缺它则内核静默退回内置兜底键集与默认值——装出来的行为与开发中的不是同一个东西。
     foreach ($f in @("contract.json")) {
         if (-not (Test-Path (Join-Path $libDst $f))) {
-            Write-Host "[install] ✗ 缺 lib\kd\$f" -ForegroundColor Red; exit 1
+            Fail "缺 lib\kd\$f"
         }
     }
 
@@ -194,19 +293,26 @@ if (-not $DryRun -and -not $NoVerify) {
     if (Test-Path (Join-Path $Bin "kd.cmd")) {
         & (Join-Path $Bin "kd.cmd") health | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[install] ✗ kd 装出来后无法执行,装机失败" -ForegroundColor Red; exit 1
+            Fail "kd 装出来后无法执行,装机失败"
         }
     } else {
         # 没有 .cmd(非 Windows 或 -NoPath 场景)就直接用 python 调启动器
         & $pyCmd (Join-Path $Bin "kd.py") health | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[install] ✗ kd 装出来后无法执行,装机失败" -ForegroundColor Red; exit 1
+            Fail "kd 装出来后无法执行,装机失败"
         }
     }
-    Step "装机自检:tests\kd_regression.py(离线组,不联网)"
-    & $pyCmd (Join-Path $Repo "tests\kd_regression.py")
+    # 闸门路径取自上面探测到的 $Repo(不是 $PSScriptRoot、也不是当前目录),故原地运行与
+    # iex+浅克隆两种形态下都指向同一个检出目录。仍然显式校验存在性:缺 tests\ 时给一句
+    # 人话,而不是让 python 抛 FileNotFoundError —— 闸门读不到就是"没放行",不可能是通过。
+    $regression = Join-Path $Repo "tests\kd_regression.py"
+    if (-not (Test-Path $regression)) {
+        Fail "检出目录缺 $regression,无法执行「离线组全绿才放行」那道闸门"
+    }
+    Step "装机自检:$regression(离线组,不联网)"
+    & $pyCmd $regression
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[install] ✗ 回归未全绿,检查上方 FAIL 项" -ForegroundColor Red; exit 1
+        Fail "回归未全绿,检查上方 FAIL 项"
     }
     Step "✓ kd 可执行且回归通过"
 } elseif ($NoVerify) {
@@ -230,3 +336,9 @@ Write-Host ""
 Write-Host "技能实体在 ~\.agents\skills\kingdee-knowledge(通用兼容,Codex/Claude Code/opencode 直接读取)," -ForegroundColor Green
 Write-Host "WorkBuddy/ZCode/pi 目录已用 junction 挂到同一份——升级重跑本脚本一次即全家生效。" -ForegroundColor Green
 Write-Host "只想装部分 harness: -Harness zcode,pi"
+
+# 临时克隆用完即删:走到这里说明库体、技能(可选)与验证都已从它取完,再留着就是垃圾。
+# (中途失败不在这里 —— 那些路径统一走 Fail,由它清理。)
+if ($TempRepo -and (Test-Path $TempRepo)) {
+    Remove-Item $TempRepo -Recurse -Force -ErrorAction SilentlyContinue
+}

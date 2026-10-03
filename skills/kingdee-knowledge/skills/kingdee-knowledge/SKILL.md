@@ -59,7 +59,7 @@ ADR-0011 去服务化后,本地落盘缓存(landing / corpus / sqlite)与发版�
 2. 一键脚本兜底路径:Windows `%USERPROFILE%\.kingdee-kit\bin\kd.cmd`;
    Linux/macOS `~/.kingdee-kit/bin/kd`
 3. 都没有 → **自己转用仓库启动器,不要停下来让用户去装**:
-   `python3 <仓库>/src/kd_run.py search "问题" --product 93`
+   `python3 <仓库>/src/kd_run.py search --kw "问题" --product 93`
    它自建 `sys.path` bootstrap,无需 PYTHONPATH,与装好的 `kd` 行为等价。仓库位置按序找:
    当前工作目录 → `kingdee-knowledge-kit` 的常见检出位置;找不到再问用户。
    **在此之前不要编造任何金蝶知识内容。**
@@ -81,14 +81,14 @@ stderr/错误 JSON(带 hint),据此换调用方式,而不是静默改道 websear
 
 ```bash
 kd search --kw "2510" --kw "应用为禁用状态[网关]" --product 93
-# → {ok, keywords, total, queries[], routesPlanned, effectiveProductId,
+# → {ok, keywords, queries[], routesPlanned, effectiveProductId,
 #    results:[…], otherSkipped, routeErrors[], keywordsDropped, scanNote,
 #    contractCfgLoaded, stats}
 # ⚠️ results[] 的字段集**按 type 分四份**(见下);url 按链接政策给值:
 #    三档都给链接(question 用带回答号的长形式,见第 3 步);
 #    `other` 档**恒不给链接**(实测无可点形式),且**默认隐藏**——隐藏时看 otherSkipped;
 # ⚠️ 顶层无 text(v6.6 删位置参数)、无 budget_exhausted(v6.6 删预算机制)、
-#    无 page/pageSize/totalPages(v6.4 删清单分页)
+#    无 page/pageSize/totalPages(v6.4 删清单分页)、无 total(v6.9 删,见本节末)
 ```
 
 **清单顺序就是上游相关度顺序**——这是本套件最重要的一条口径:
@@ -114,17 +114,18 @@ kd search --kw "2510" --kw "应用为禁用状态[网关]" --product 93
 - **`keywordsDropped > 0` = 你给的词有没发出去的**(超出上限 7),召回按定义不完整:
   先消化已获结果,判定置信度时把这一点算进去,别立刻重跑。
 
-**`results[]` 的字段集按 `type` 分三份**(v6.6,ADR-0016 决策 6):
+**`results[]` 的字段集按 `type` 分四份**(ADR-0016 决策 6;第四份 `other` 为 v6.7 新增):
 
 | 类型 | 字段集 |
 |---|---|
-| 公共(三类恒有) | `type`/`id`/`title`/`url`/`snippet`/`products`/`comments`/`hitRoutes`/`routes[]` |
+| 公共(四档恒有) | `type`/`id`/`title`/`url`/`snippet`/`products`/`comments`/`hitRoutes`/`routes[]` |
 | `question` 另加 | `adopted`/`answersCount`/`questionBody` |
 | `article` 另加 | `supports` |
+| `other` 另加 | `upstreamType`/`resourceType`(该档默认隐藏,需 `--include-other` 才返回) |
 
 ⚠️ **类型不适用的键直接不出现**(例如 article **没有** `adopted` 这个键)——这与"值为 `null`"
 是两件事:前者是"结构性不适用"(知识文档永远没有回答数),后者是"上游这次没给值"。
-你按类型取字段即可,不要假设三类的键集一样。
+你按类型取字段即可,不要假设四档的键集一样。
 
 ```bash
 kd search --kw "BOM 分母" --kw "MRP 用量" --kw "应用为禁用状态[网关]" --product 93
@@ -200,6 +201,9 @@ kd search --kw KW [--kw KW]... [--product N] [--global] [--include-other]
 | `分母变平方`(症状词) | 22038 | 2(未变) |
 | **`BOM`**(拉丁缩写,**看起来最像标识符**) | 1308 | **12**(从第 2 掉下去!) |
 
+(⚠️ 上表的 `total` 列记的是**当时**返回体的顶层 `total` —— **该字段自 v6.9 起已不再返回**
+(见 `contract.json` 的 `search.note_totalRemoved`)。数字本身仍是当时的实测证据,故保留。)
+
 即:**"这个词看起来稀有"不等于"它比同问句里的其他路更收窄"**——判断这件事需要语义,
 而这个判断现在归你。上表是**唯一被实测背书的形态**:纯数字前置有效,拉丁缩写前置**有负结果**。
 
@@ -212,8 +216,10 @@ kd search --kw KW [--kw KW]... [--product N] [--global] [--include-other]
 | 反例 3 | 只给正对症状的那一路 → `--kw "应用为禁用状态"`(丢了 `[网关]`) | 金标**掉出前 30**(只差一个方括号) |
 | 反例 4 | 把英文缩写放第 1 路 → `--kw "BOM" --kw "<整句>"` | 金标 B 从第 2 **掉到第 12** |
 
-⚠️ `total` 是上游候选集规模,会随语料漂移,**比对检索效果只看金标位次,不看 total**;
-位次本身也有 ±1 的固有抖动,不要把 ±1 当成"这次拆词变差了"。
+⚠️ 上表两处的 `total` 记的是**当时**返回体的顶层 `total`(上游候选集规模,会随语料漂移):
+**该字段自 v6.9 起已不再返回**(它没有任何可行动的用法 —— 比对检索效果**只看金标位次**;
+差额解释的载体现为 `otherSkipped`/`keywordsDropped`/`routeErrors`)。位次本身也有 ±1 的
+固有抖动,不要把 ±1 当成"这次拆词变差了"。
 
 ### 整句必须作为一路发出(有实测依据,不要省掉它)
 
@@ -419,7 +425,9 @@ site:help.open.kingdee.com <功能名词>
 | 开发类但**分不清哪一侧** | `--product 87` | 87 是开发类的主语料;拿不准时不要猜第二条线 |
 
 `--product 2`(星空侧二开问答专区)的**可执行判据是"返回条目类型恒为问答帖"**,
-而不是某一条 total 数值(total 会随语料漂移)。2026-09-28 复测:
+而不是某一条候选集规模数值(候选集规模随语料漂移)。2026-09-28 复测:
+(下表 `total` 列记的是**当时**返回体的顶层 `total`,**该字段自 v6.9 起已不再返回** ——
+数字本身仍是当时的实测证据,故保留。)
 
 | 词 | `--product 87` | `--product 2` |
 |---|---|---|
@@ -427,7 +435,7 @@ site:help.open.kingdee.com <功能名词>
 | 账表开发 | total 11104,首条是 knowledge《"账表查询"检查项类型配置指南》 | total 1127,**9/9 全 question**,首条《简单账表如何进行分页呢?》 |
 
 ⚠️ 口径提醒:上表数字与早期记录(「插件开发」下 2 得 611 条)不同,原因是那次**没带
-`--type` 过滤**、且上游语料在增长。**不要把 total 当判据**,看条目类型构成。
+`--type` 过滤**、且上游语料在增长。**不要把候选集规模当判据**,看条目类型构成。
 
 ⚠️ `--product 2` 是**实测可用但文档长期未记录**的产品线 ID。它的存在本身就是
 "开发类要分语境"这件事的硬证据,不要因为文档没写就不用它。

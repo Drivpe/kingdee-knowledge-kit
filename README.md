@@ -45,7 +45,7 @@
 > `query_routes.json` 文件删除(路数上限与限速档并入 `contract.json` 的 `limits` 段);
 > **位置参数与 `--type`/`--max-routes`/`--budget`/`--chunk` 全部删除**,`--kw` 成为唯一入口;
 > **预算机制与跨页扫描删除**(每路恒 1 次请求);`--product` 三态收两态(`None` 与不传同义,
-> 不过滤只由显式 `0` 表达);清单**字段集按类型分三份**(类型不适用的键**不出现**,而非填 `null`);
+> 不过滤只由显式 `0` 表达);清单**字段集按类型分四份**(第四份 `other` 为 v6.7 新增;类型不适用的键**不出现**,而非填 `null`);
 > `read(question)` 的截断由布尔改为**原因枚举**(`answer_limit` / `upstream_error`);
 > 新增顶层 `keywordsDropped`(超限丢了几条词)。
 > ⚠️ **迁移**:`kd search "整句"` → `kd search --kw "词1" --kw "词2"`(拆词规范见 `SKILL.md`);
@@ -80,20 +80,45 @@ pipx install kingdee-knowledge-kit && kd health
 
 ### ② 一键脚本(兜底:无 Python 环境或统一装机)
 
-Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.ps1 | iex
-```
+脚本自身不含源码 —— 库体(`src/kd`)、技能(`skills/`)、验证闸门(`tests/kd_regression.py`)
+都从**仓库检出**里取,所以它的稳态用法是**先克隆再原地运行**:
 
 Linux / macOS:
 
 ```bash
+git clone --depth 1 https://github.com/Drivpe/kingdee-knowledge-kit.git
+cd kingdee-knowledge-kit && ./install.sh
+```
+
+Windows PowerShell(同样在检出目录里):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+也可以直接管道下发:管道形式下脚本没有"脚本自身所在目录",它会先把仓库**浅克隆到临时目录**
+再继续,装完即删。这条路多两个前提 ——
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.ps1 | iex
+```
+
+```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Drivpe/kingdee-knowledge-kit/main/install.sh | bash
 ```
 
+- 需要 `git` 且能访问 GitHub(拉不到就回落成下面的清晰报错,不会半途失败);
+- **管道下发的脚本 = 远程那一版**:远程还没同步时,你拿到的是旧脚本,探测与报错逻辑都不参与,
+  所以**远程落后时请用上面的 clone 形式**。
+
+两种形式都取不到检出目录时,脚本**不半途失败**:它打印上面的 clone 用法并以非 0 退出
+(不会出现 `cp: cannot stat '…/src/kd'` 这种既看不懂也不知道怎么办的报错)。
+
 装什么:①kd CLI(`~/.kingdee-kit/bin` 或 `%USERPROFILE%\.kingdee-kit\bin`,加入 PATH)
-②技能(`~/.agents/skills/kingdee-knowledge`) ③自动跑 `tests/kd_regression.py` 离线组 35 项,全绿才放行(`kd health` 冒烟验证同一批闸门)。
+②技能(`~/.agents/skills/kingdee-knowledge`) ③自动跑 `tests/kd_regression.py` 的离线组,**全绿才放行**
+(该组条数以脚本自身输出为准;`kd health` 冒烟验证同一批闸门)。
 开关:`--root DIR` / `--no-path` / `--no-skills` / `--no-verify`(PowerShell 侧为 `-InstallRoot -NoPath -NoSkills -NoVerify`)。
 
 > 内核是**库**,不是服务:安装后不常驻进程、不开端口、不写仓外数据。
@@ -152,15 +177,14 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 
 | 字段 | 说明 |
 |---|---|
-| `keywords` | 回显你给的词列表(v6.6 起顶层**不再有 `text`**) |
-| `total` | 各路 `totalElements` 的最大值 |
+| `keywords` | 回显你给的词列表(v6.6 起顶层**不再有 `text`**;v6.9 起顶层**不再有 `total`**) |
 | `queries[]` | 去重后**实际**发出的检索词,顺序即路序 |
 | `routesPlanned` | 计划路数(去重前,受声明的收词上限截断后) |
 | `effectiveProductId` | 本次**实际生效**的产品过滤(整数,与 `--product` 同值域;不传即默认 93)。内核不做字面推导,故它**恒等于你传入的值** |
 | `results[]` | **帖级**清单条目,**字段集按 `type` 分四份**:公共 `type`/`id`/`title`/`url`/`snippet`/`products`/`comments`/`hitRoutes`/`routes[]`;`question` 另加 `adopted`/`answersCount`/`questionBody`;`article` 另加 `supports`;`other` 另加 `upstreamType`/`resourceType`(罕见类型默认隐藏,见 `otherSkipped` 与 `--include-other`)。类型不适用的键**直接不出现**(不是 `null`) |
 | `routeErrors[]` | 失败路(`{route,kind,terms,error,code,message}`)——用于区分"被上游拒绝"与"官方没这类文档" |
 | `keywordsDropped` | 因超出收词上限而未发出的词数(0 = 没丢);>0 即召回按定义不完整 |
-| `otherSkipped` | 被**隐藏**掉的罕见类型条数(`other` 档默认隐藏;0 = 没跳过或已用 `--include-other` 打开)。⚠️ 隐藏**必须可见**——它让"total 大而 results 小"的差额永远有解释 |
+| `otherSkipped` | 被**隐藏**掉的罕见类型条数(`other` 档默认隐藏;0 = 没跳过或已用 `--include-other` 打开)。⚠️ 隐藏**必须可见**——它让"清单比实际召回少了一截"的差额永远有解释 |
 | `scanNote` | 人读诊断串(含罕见类型跳过数、超限丢词与"丢弃空白词 N 条"说明) |
 | `contractCfgLoaded` | 包内 `contract.json` **是否真的读到**。`false` ⇒ 链接政策已回落"全部不给链接",**所有 `url` 是 `null`**——那是"没读到声明",不是"官方这些条目没链接" |
 | `stats` | `{upstreamCalls, elapsedMs}` |
@@ -168,6 +192,8 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 `results[]` 里**没有** `contentText`——要全文必须 `kd read`。也**没有任何 score 字段**,
 没有 `page`/`pageSize`/`totalPages`(清单分页已于 v6.4 删除),没有 `questionId`
 (帖级化后条目 `id` 就是帖子号),顶层没有 `text` 与 `budget_exhausted`(v6.6 删除)、
+没有 `total`(v6.9 删除:**破坏性变更**,理由见 [contract.json](src/kd/contract.json) 的
+`search.note_totalRemoved`)、
 没有 `routesDegraded`(2026-09-29 删除:它报得自相矛盾,用户口径为"重复的不提示")。
 
 ⚠️ **类型不适用的键不出现 ≠ 值为 `null`**(v6.6):前者是"结构性不适用"(知识文档永远
@@ -210,8 +236,8 @@ bash install.sh --root ~/kit --no-path --no-skills                   # *nix 自�
 
 ### 回归
 
-改内核/CLI 后:`python3 tests/kd_regression.py`(离线 35 项,不联网、不需要任何环境变量);
-联网用例加 `--online`(另 15 项,真实上游、保持人类频率)。
+改内核/CLI 后:`python3 tests/kd_regression.py`(离线组,不联网、不需要任何环境变量;该组条数以脚本自身输出为准);
+联网用例加 `--online`(另跑一组真实上游用例,数量同样以脚本输出为准;保持人类频率)。
 离线组内含原先由 `scripts/check_core_surface.py` 承担的三条判据(版本号单一真源 /
 `health` 内部件依赖可解析 / kind 集合三源一致)——该脚本已于 v6.4 整体删除。
 检索侧改动另需手工用例验收(原 `run_eval` 评测体系已随去服务化删除)。
